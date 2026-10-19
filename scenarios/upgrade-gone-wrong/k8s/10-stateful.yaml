@@ -1,0 +1,209 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: zonal-ssd
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+---
+# zonal disks for events-0/1/2 (zones a, b, a) and store-0/1/2 (zones a, b, a)
+apiVersion: v1
+kind: PersistentVolume
+metadata: { name: events-disk-0 }
+spec:
+  capacity: { storage: 100Gi }
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: zonal-ssd
+  claimRef: { namespace: production, name: data-events-0 }
+  hostPath: { path: /var/lib/events-0, type: DirectoryOrCreate }  # the "zonal disk" of the story: a directory on the kind node, there is no cloud storage
+  nodeAffinity: { required: { nodeSelectorTerms: [ { matchExpressions: [ { key: topology.kubernetes.io/zone, operator: In, values: [ru-central1-a] } ] } ] } }
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata: { name: events-disk-1 }
+spec:
+  capacity: { storage: 100Gi }
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: zonal-ssd
+  claimRef: { namespace: production, name: data-events-1 }
+  hostPath: { path: /var/lib/events-1, type: DirectoryOrCreate }  # the "zonal disk" of the story: a directory on the kind node, there is no cloud storage
+  nodeAffinity: { required: { nodeSelectorTerms: [ { matchExpressions: [ { key: topology.kubernetes.io/zone, operator: In, values: [ru-central1-b] } ] } ] } }
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata: { name: events-disk-2 }
+spec:
+  capacity: { storage: 100Gi }
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: zonal-ssd
+  claimRef: { namespace: production, name: data-events-2 }
+  hostPath: { path: /var/lib/events-2, type: DirectoryOrCreate }  # the "zonal disk" of the story: a directory on the kind node, there is no cloud storage
+  nodeAffinity: { required: { nodeSelectorTerms: [ { matchExpressions: [ { key: topology.kubernetes.io/zone, operator: In, values: [ru-central1-a] } ] } ] } }
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata: { name: store-disk-0 }
+spec:
+  capacity: { storage: 200Gi }
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: zonal-ssd
+  claimRef: { namespace: production, name: data-store-0 }
+  hostPath: { path: /var/lib/store-0, type: DirectoryOrCreate }  # the "zonal disk" of the story: a directory on the kind node, there is no cloud storage
+  nodeAffinity: { required: { nodeSelectorTerms: [ { matchExpressions: [ { key: topology.kubernetes.io/zone, operator: In, values: [ru-central1-a] } ] } ] } }
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata: { name: store-disk-1 }
+spec:
+  capacity: { storage: 200Gi }
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: zonal-ssd
+  claimRef: { namespace: production, name: data-store-1 }
+  hostPath: { path: /var/lib/store-1, type: DirectoryOrCreate }  # the "zonal disk" of the story: a directory on the kind node, there is no cloud storage
+  nodeAffinity: { required: { nodeSelectorTerms: [ { matchExpressions: [ { key: topology.kubernetes.io/zone, operator: In, values: [ru-central1-b] } ] } ] } }
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata: { name: store-disk-2 }
+spec:
+  capacity: { storage: 200Gi }
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: zonal-ssd
+  claimRef: { namespace: production, name: data-store-2 }
+  hostPath: { path: /var/lib/store-2, type: DirectoryOrCreate }  # the "zonal disk" of the story: a directory on the kind node, there is no cloud storage
+  nodeAffinity: { required: { nodeSelectorTerms: [ { matchExpressions: [ { key: topology.kubernetes.io/zone, operator: In, values: [ru-central1-a] } ] } ] } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: data-events-0, namespace: production }
+spec: { accessModes: [ReadWriteOnce], storageClassName: zonal-ssd, volumeName: events-disk-0, resources: { requests: { storage: 100Gi } } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: data-events-1, namespace: production }
+spec: { accessModes: [ReadWriteOnce], storageClassName: zonal-ssd, volumeName: events-disk-1, resources: { requests: { storage: 100Gi } } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: data-events-2, namespace: production }
+spec: { accessModes: [ReadWriteOnce], storageClassName: zonal-ssd, volumeName: events-disk-2, resources: { requests: { storage: 100Gi } } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: data-store-0, namespace: production }
+spec: { accessModes: [ReadWriteOnce], storageClassName: zonal-ssd, volumeName: store-disk-0, resources: { requests: { storage: 200Gi } } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: data-store-1, namespace: production }
+spec: { accessModes: [ReadWriteOnce], storageClassName: zonal-ssd, volumeName: store-disk-1, resources: { requests: { storage: 200Gi } } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: data-store-2, namespace: production }
+spec: { accessModes: [ReadWriteOnce], storageClassName: zonal-ssd, volumeName: store-disk-2, resources: { requests: { storage: 200Gi } } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: events, namespace: production }
+spec: { clusterIP: None, selector: { app: events }, ports: [ { port: 9092, targetPort: 9092 } ] }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: store, namespace: production }
+spec: { clusterIP: None, selector: { app: store }, ports: [ { port: 9042, targetPort: 9042 } ] }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: events
+  namespace: production
+  labels: { app: events }
+spec:
+  serviceName: events
+  replicas: 3
+  selector: { matchLabels: { app: events } }
+  template:
+    metadata: { labels: { app: events } }
+    spec:
+      nodeSelector: { node-pool: stateful }
+      containers:
+        - name: broker
+          image: wom-scenario/upgrade-gone-wrong:dev
+          imagePullPolicy: IfNotPresent
+          env: [ { name: ROLE, value: events-broker }, { name: PORT, value: "9092" }, { name: DATADIR, value: /var/lib/events } ]
+          ports: [ { containerPort: 9092, name: broker } ]
+          volumeMounts: [ { name: data, mountPath: /var/lib/events } ]
+          readinessProbe: { httpGet: { path: /health, port: broker }, periodSeconds: 3 }
+          resources: { requests: { cpu: 20m, memory: 32Mi }, limits: { memory: 64Mi } }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec: { accessModes: [ReadWriteOnce], storageClassName: zonal-ssd, resources: { requests: { storage: 100Gi } } }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: store
+  namespace: production
+  labels: { app: store }
+spec:
+  serviceName: store
+  replicas: 3
+  selector: { matchLabels: { app: store } }
+  template:
+    metadata: { labels: { app: store } }
+    spec:
+      nodeSelector: { node-pool: stateful }
+      containers:
+        - name: store
+          image: wom-scenario/upgrade-gone-wrong:dev
+          imagePullPolicy: IfNotPresent
+          env: [ { name: ROLE, value: store-node }, { name: PORT, value: "9042" }, { name: DATADIR, value: /var/lib/store } ]
+          ports: [ { containerPort: 9042, name: cql } ]
+          volumeMounts: [ { name: data, mountPath: /var/lib/store } ]
+          readinessProbe: { httpGet: { path: /health, port: cql }, periodSeconds: 3 }
+          resources: { requests: { cpu: 20m, memory: 32Mi }, limits: { memory: 64Mi } }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec: { accessModes: [ReadWriteOnce], storageClassName: zonal-ssd, resources: { requests: { storage: 200Gi } } }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: events-pdb, namespace: production }
+spec: { minAvailable: 2, selector: { matchLabels: { app: events } } }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: store-pdb, namespace: production }
+spec: { minAvailable: 2, selector: { matchLabels: { app: store } } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-api
+  namespace: production
+  labels: { app: app-api }
+spec:
+  replicas: 4
+  selector: { matchLabels: { app: app-api } }
+  template:
+    metadata: { labels: { app: app-api } }
+    spec:
+      containers:
+        - name: app-api
+          image: wom-scenario/upgrade-gone-wrong:dev
+          imagePullPolicy: IfNotPresent
+          env: [ { name: ROLE, value: app-api } ]
+          ports: [ { containerPort: 8080, name: http } ]
+          readinessProbe: { httpGet: { path: /health, port: http }, periodSeconds: 3 }
+          resources: { requests: { cpu: 10m, memory: 16Mi }, limits: { memory: 32Mi } }

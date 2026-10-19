@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wom-platform.local/schemas/wom.scenario.v2.json",
+  "title": "WOM Scenario Import v2",
+  "description": "Import file produced by `wom scenario export`. Source of truth is packages/scenario/src/schema.ts (zod); this file mirrors it for external validators and packages/scenario/test/schema-mirror.test.ts fails when the two drift apart. v1 files (schemas/wom.scenario.v1.json in wom-games, no `version`) are still accepted by POST /api/import as text-only scenarios.",
+  "type": "object",
+  "required": ["version", "scenarios"],
+  "properties": {
+    "version": { "const": 2 },
+    "scenarios": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "required": ["slug", "schemaVersion", "title", "summary", "type", "difficulty", "durationMin", "contextJson", "eventsJson", "hintsJson", "actionsJson", "gmScriptJson", "briefMd", "debriefMd", "environmentJson", "breakScript", "graderScript", "solutionScript"],
+        "properties": {
+          "slug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,63}$" },
+          "schemaVersion": { "enum": [1, 2] },
+          "title": { "type": "string", "minLength": 3, "maxLength": 120 },
+          "summary": { "type": "string", "minLength": 10, "maxLength": 2000 },
+          "type": { "type": "string", "minLength": 3, "maxLength": 120 },
+          "difficulty": { "enum": ["JUNIOR", "MIDDLE", "SENIOR"] },
+          "durationMin": { "type": "integer", "minimum": 5, "maximum": 180 },
+          "tags": { "type": "array", "maxItems": 20, "items": { "type": "string", "pattern": "^[a-z0-9-]{1,30}$" } },
+          "contextJson": { "type": "object" },
+          "eventsJson": { "type": "array", "maxItems": 200 },
+          "hintsJson": { "type": "array", "maxItems": 9, "items": { "type": "object", "required": ["level", "text"], "properties": { "level": { "type": "integer", "minimum": 1, "maximum": 9 }, "text": { "type": "string", "minLength": 5, "maxLength": 1000 }, "penalty": { "type": "integer", "minimum": 0, "maximum": 100 } } } },
+          "actionsJson": { "type": "array", "maxItems": 200 },
+          "gmScriptJson": { "type": ["object", "null"] },
+          "briefMd": { "type": ["string", "null"] },
+          "debriefMd": { "type": ["string", "null"], "description": "never shown to the player before the session ends" },
+          "environmentJson": {
+            "type": ["object", "null"],
+            "description": "null = text-only scenario (leader mode). The environment as stored: no file references (build, setup, break, check, solve); kubernetes manifests are inlined as {name, content}.",
+            "properties": {
+              "kind": { "enum": ["container", "kubernetes", "compose"], "description": "compose is rejected by the linter in this version" },
+              "image": { "type": "string", "minLength": 3, "maxLength": 200, "pattern": "^[a-z0-9]+(?:[._-]+[a-z0-9]+)*(?::\\d{1,5})?(?:/[a-z0-9]+(?:[._-]+[a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?(?:@sha256:[0-9a-f]{64})?$" },
+              "cluster": {
+                "type": "object",
+                "description": "kubernetes only",
+                "properties": {
+                  "nodes": { "type": "integer", "minimum": 1, "maximum": 4 },
+                  "workerLabels": { "type": "array", "maxItems": 3, "items": { "type": "object", "additionalProperties": { "type": "string", "minLength": 1 } } },
+                  "nodeImage": { "type": "string", "pattern": "^kindest/node:v\\d+\\.\\d+\\.\\d+(?:@sha256:[0-9a-f]{64})?$" }
+                }
+              },
+              "manifests": { "type": "array", "description": "kubernetes only: *.yaml applied in name order", "maxItems": 50, "items": { "type": "object", "required": ["name", "content"], "additionalProperties": false, "properties": { "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\\.ya?ml$" }, "content": { "type": "string", "maxLength": 2097152 } } } },
+              "images": {
+                "type": "array",
+                "maxItems": 20,
+                "description": "kubernetes only: images to `kind load` into the nodes",
+                "items": { "type": "string", "minLength": 3, "maxLength": 200, "pattern": "^[a-z0-9]+(?:[._-]+[a-z0-9]+)*(?::\\d{1,5})?(?:/[a-z0-9]+(?:[._-]+[a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?(?:@sha256:[0-9a-f]{64})?$" }
+              },
+              "ttlMin": { "type": "integer", "minimum": 5, "maximum": 240 },
+              "resources": { "type": "object", "properties": { "cpus": { "type": "number", "exclusiveMinimum": 0, "maximum": 4 }, "memoryMb": { "type": "integer", "minimum": 64, "maximum": 4096 }, "pids": { "type": "integer", "minimum": 16, "maximum": 4096 } } },
+              "network": { "type": "object", "properties": { "egress": { "enum": ["none", "allowlist"] }, "allow": { "type": "array", "maxItems": 50, "items": { "type": "string" } } } },
+              "services": { "type": "array", "maxItems": 20, "items": { "type": "object", "required": ["name", "port"], "properties": { "name": { "type": "string", "minLength": 1, "maxLength": 40 }, "port": { "type": "integer", "minimum": 1, "maximum": 65535 }, "kind": { "enum": ["http", "tcp"] } } } },
+              "shell": { "type": "object", "properties": { "user": { "type": "string", "minLength": 1, "maxLength": 32 }, "cwd": { "type": "string", "pattern": "^/" }, "shell": { "type": "string", "pattern": "^/" }, "sudo": { "type": "boolean" } } },
+              "hostname": { "type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$" },
+              "writable": { "type": "array", "maxItems": 20, "items": { "type": "string", "pattern": "^/$|^(?:/(?!\\.{1,2}(?:/|$))[^/\\u0000]+)+$" } },
+              "tmpfs": { "type": "object", "description": "path -> size=<n>[k|m|g]", "propertyNames": { "pattern": "^/$|^(?:/(?!\\.{1,2}(?:/|$))[^/\\u0000]+)+$" }, "additionalProperties": { "type": "string", "pattern": "^size=\\d+[kKmMgG]$" } },
+              "capabilities": { "type": "array", "maxItems": 20, "items": { "type": "string", "pattern": "^(?!CAP_)[A-Z][A-Z_]+$" } },
+              "startup": { "type": "object", "additionalProperties": false, "properties": { "expectedSec": { "type": "integer", "minimum": 5, "maximum": 900 }, "note": { "type": "string", "maxLength": 200 } } },
+              "artifacts": { "type": "array", "maxItems": 50, "items": { "type": "object", "required": ["src", "dest"], "properties": { "src": { "type": "string", "minLength": 1 }, "dest": { "type": "string", "pattern": "^/" } } } }
+            },
+            "additionalProperties": false
+          },
+          "breakScript": { "type": ["string", "null"], "description": "SECRET: POSIX sh, run as root over stdin after the sandbox starts" },
+          "graderScript": { "type": ["string", "null"], "description": "SECRET: POSIX sh, prints {passed, criteria[]} JSON" },
+          "solutionScript": { "type": ["string", "null"], "description": "SECRET: reference solution for regression tests and the debrief" },
+          "guideMd": { "type": ["string", "null"], "description": "teaching scenarios: markdown split by `## ` headings into stages the player reveals one by one" }
+        }
+      }
+    }
+  }
+}

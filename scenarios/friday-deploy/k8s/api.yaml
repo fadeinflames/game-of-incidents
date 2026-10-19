@@ -1,0 +1,100 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-backend
+  namespace: default
+  labels: { app: api-backend }
+  annotations:
+    kubernetes.io/change-cause: "release v2.1.2"
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels: { app: api-backend }
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  template:
+    metadata:
+      labels: { app: api-backend }
+    spec:
+      containers:
+        - name: api-backend
+          image: wom-scenario/friday-deploy:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: APP_VERSION, value: "2.1.2" }
+            - { name: UPLOAD_CACHE, value: "off" }
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 3
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 96Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-backend
+  namespace: default
+spec:
+  selector: { app: api-backend }
+  ports:
+    - { port: 80, targetPort: http }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: default
+  labels: { app: worker }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: worker }
+  template:
+    metadata:
+      labels: { app: worker }
+    spec:
+      containers:
+        - name: worker
+          image: wom-scenario/friday-deploy:dev
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "echo worker ready; while true; do sleep 3600; done"]
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 32Mi }
+---
+# customer traffic (not part of the incident; it is what the error-rate alert measures)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traffic
+  namespace: default
+  labels: { app: traffic }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: traffic }
+  template:
+    metadata:
+      labels: { app: traffic }
+    spec:
+      containers:
+        - name: loadgen
+          image: wom-scenario/friday-deploy:dev
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "/app/loadgen.py"]
+          env:
+            - { name: TARGET, value: "http://api-backend" }
+          ports:
+            - { containerPort: 9090, name: stats }
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 64Mi }

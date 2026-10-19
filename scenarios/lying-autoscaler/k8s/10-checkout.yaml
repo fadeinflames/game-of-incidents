@@ -1,0 +1,143 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: checkout-config
+  namespace: default
+data:
+  PEER_GOSSIP: "off"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: checkout-api
+  namespace: default
+  labels: { app: checkout-api }
+  annotations:
+    kubernetes.io/change-cause: "release 3.3"
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: checkout-api }
+  template:
+    metadata:
+      labels: { app: checkout-api }
+    spec:
+      containers:
+        - name: checkout-api
+          image: wom-scenario/lying-autoscaler:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: PEERS_DNS, value: checkout-api-peers }
+            - name: PEER_GOSSIP
+              valueFrom: { configMapKeyRef: { name: checkout-config, key: PEER_GOSSIP } }
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 100m, memory: 32Mi }
+            limits: { cpu: 150m, memory: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: checkout-api
+  namespace: default
+spec:
+  selector: { app: checkout-api }
+  ports:
+    - { port: 80, targetPort: http }
+---
+# headless: every replica can see every other replica (used by the 3.4 "cart consistency" sync)
+apiVersion: v1
+kind: Service
+metadata:
+  name: checkout-api-peers
+  namespace: default
+spec:
+  clusterIP: None
+  selector: { app: checkout-api }
+  ports:
+    - { port: 8080, targetPort: http }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: checkout-api
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: checkout-api
+  minReplicas: 2
+  maxReplicas: 12
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 50 }
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - { type: Percent, value: 100, periodSeconds: 15 }
+    scaleDown:
+      stabilizationWindowSeconds: 60
+      policies:
+        - { type: Pods, value: 2, periodSeconds: 30 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-api
+  namespace: default
+  labels: { app: payment-api }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: payment-api }
+  template:
+    metadata:
+      labels: { app: payment-api }
+    spec:
+      containers:
+        - name: payment-api
+          image: wom-scenario/lying-autoscaler:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 64Mi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traffic
+  namespace: default
+  labels: { app: traffic }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: traffic }
+  template:
+    metadata:
+      labels: { app: traffic }
+    spec:
+      containers:
+        - name: loadgen
+          image: wom-scenario/lying-autoscaler:dev
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "/app/loadgen.py"]
+          env:
+            - { name: TARGET, value: "http://checkout-api" }
+          ports:
+            - { containerPort: 9090, name: stats }
+          resources:
+            requests: { cpu: 30m, memory: 32Mi }
+            limits: { memory: 64Mi }

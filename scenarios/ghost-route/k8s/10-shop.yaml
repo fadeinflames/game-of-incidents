@@ -1,0 +1,141 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-service
+  namespace: default
+  labels: { app: api-service }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: api-service }
+  template:
+    metadata:
+      labels: { app: api-service }
+    spec:
+      containers:
+        - name: api
+          image: wom-scenario/ghost-route:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: ROLE, value: api }
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-service
+  namespace: default
+spec:
+  selector: { app: api-service }
+  ports:
+    - { port: 80, targetPort: http }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-frontend
+  namespace: default
+  labels: { app: web-frontend }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: web-frontend }
+  template:
+    metadata:
+      labels: { app: web-frontend }
+    spec:
+      containers:
+        - name: web
+          image: wom-scenario/ghost-route:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: ROLE, value: web }
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-frontend
+  namespace: default
+spec:
+  selector: { app: web-frontend }
+  ports:
+    - { port: 80, targetPort: http }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api
+  namespace: default
+  annotations:
+    owner: backend-team
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: api.shop.local
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service: { name: api-service, port: { number: 80 } }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web
+  namespace: default
+  annotations:
+    owner: frontend-team
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: shop.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: web-frontend, port: { number: 80 } }
+---
+# clients: mobile app -> api.shop.local/api/*, browsers -> shop.local/*; both through the ingress controller
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clients
+  namespace: default
+  labels: { app: clients }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: clients }
+  template:
+    metadata:
+      labels: { app: clients }
+    spec:
+      containers:
+        - name: loadgen
+          image: wom-scenario/ghost-route:dev
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "/app/loadgen.py"]
+          env:
+            - { name: INGRESS, value: "http://ingress-nginx-controller.ingress-nginx.svc" }
+          ports:
+            - { containerPort: 9090, name: stats }
+          resources:
+            requests: { cpu: 30m, memory: 32Mi }
+            limits: { memory: 64Mi }

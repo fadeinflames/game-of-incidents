@@ -1,0 +1,111 @@
+# the corporate DNS (on-prem in the story): authoritative for corp.internal, reachable from the cluster at 10.96.0.53.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: infra
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: corp-dns
+  namespace: infra
+data:
+  Corefile: |
+    corp.internal:53 {
+        errors
+        log
+        hosts {
+            10.10.0.5 payments-gateway.corp.internal
+            10.10.0.6 ldap.corp.internal
+            10.10.0.7 smtp.corp.internal
+            ttl 30
+            fallthrough
+        }
+    }
+    .:53 {
+        errors
+        health :8080
+        ready :8181
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: corp-dns
+  namespace: infra
+  labels: { app: corp-dns }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: corp-dns }
+  template:
+    metadata:
+      labels: { app: corp-dns }
+    spec:
+      containers:
+        - name: coredns
+          image: registry.k8s.io/coredns/coredns:v1.14.6
+          imagePullPolicy: IfNotPresent
+          args: ["-conf", "/etc/coredns/Corefile"]
+          ports:
+            - { containerPort: 53, name: dns, protocol: UDP }
+            - { containerPort: 53, name: dns-tcp, protocol: TCP }
+          volumeMounts:
+            - { name: config, mountPath: /etc/coredns }
+          readinessProbe:
+            httpGet: { path: /ready, port: 8181 }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 96Mi }
+      volumes:
+        - name: config
+          configMap: { name: corp-dns, items: [ { key: Corefile, path: Corefile } ] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: corp-dns
+  namespace: infra
+spec:
+  clusterIP: 10.96.0.53
+  selector: { app: corp-dns }
+  ports:
+    - { name: dns, port: 53, targetPort: 53, protocol: UDP }
+    - { name: dns-tcp, port: 53, targetPort: 53, protocol: TCP }
+---
+# cluster CoreDNS: standard kind Corefile + a stub zone for corp.internal (the platform team's standard config)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns
+  namespace: kube-system
+data:
+  Corefile: |
+    corp.internal:53 {
+        errors
+        cache 30
+        forward . 10.96.0.53 {
+            max_concurrent 100
+        }
+    }
+    .:53 {
+        errors
+        health {
+           lameduck 5s
+        }
+        ready
+        kubernetes cluster.local in-addr.arpa ip6.arpa {
+           pods insecure
+           fallthrough in-addr.arpa ip6.arpa
+           ttl 30
+        }
+        prometheus :9153
+        forward . /etc/resolv.conf {
+           max_concurrent 1000
+        }
+        cache 30
+        loop
+        reload
+        loadbalance
+    }

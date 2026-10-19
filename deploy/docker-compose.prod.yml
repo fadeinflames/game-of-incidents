@@ -1,0 +1,84 @@
+# Production overlay (ADR-0007). Use via .env: COMPOSE_FILE=docker-compose.yml:deploy/docker-compose.prod.yml
+# Caddy terminates TLS and is the only published service; web and orchestrator are reachable through it only.
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: wom_caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      WOM_DOMAIN: ${WOM_DOMAIN:?set WOM_DOMAIN in .env}
+      # address (CIDR) of a TCP proxy in front that sends PROXY protocol headers; see deploy/Caddyfile
+      WOM_TRUSTED_PROXY: ${WOM_TRUSTED_PROXY:-127.0.0.1/32}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [web, orchestrator]
+    # the access log goes to stdout: the daemon default (10m x 3) keeps only a few hours of it
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "30"
+    networks: [internal]
+
+  web:
+    restart: unless-stopped
+    # the platform shares the host with the sandboxes: a leak here must not starve PostgreSQL or the kind nodes
+    mem_limit: 1536m
+    pids_limit: 2048
+    ports: !override []
+    environment:
+      COOKIE_SECURE: "true"
+      REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-true}
+      # per-address caps must be adjustable from .env: a meetup or an office behind one NAT hits them at once (0 = no cap)
+      REGISTRATIONS_PER_IP_PER_DAY: ${REGISTRATIONS_PER_IP_PER_DAY:-5}
+      ORCHESTRATOR_PUBLIC_URL: https://${WOM_DOMAIN:?set WOM_DOMAIN in .env}
+      # the public host name for the pages the web app builds itself (canonical URL, sitemap, Open Graph image): without it
+      # a second instance would advertise the default domain
+      WOM_DOMAIN: ${WOM_DOMAIN:?set WOM_DOMAIN in .env}
+
+  orchestrator:
+    restart: unless-stopped
+    mem_limit: 3g
+    pids_limit: 2048
+    volumes:
+      - wom_image_cache:/var/cache/wom-images
+    ports: !override []
+    environment:
+      MAX_SESSIONS_GLOBAL: ${MAX_SESSIONS_GLOBAL:-20}
+      MAX_K8S_SESSIONS: ${MAX_K8S_SESSIONS:-6}
+      MAX_SESSIONS_PER_IP: ${MAX_SESSIONS_PER_IP:-3}
+      # docker-save archives of the images a cluster loads: a heavy scenario no longer exports 2-3 GB on every start
+      WOM_IMAGE_CACHE_DIR: /var/cache/wom-images
+      WOM_IMAGE_CACHE_MAX_MB: ${WOM_IMAGE_CACHE_MAX_MB:-6144}
+      # how long finished sessions' events and submissions' archives are kept (days; 0 = keep for ever)
+      RETENTION_DAYS: ${RETENTION_DAYS:-90}
+      RETENTION_ARCHIVE_DAYS: ${RETENTION_ARCHIVE_DAYS:-180}
+      MAX_K8S_PROVISIONING: ${MAX_K8S_PROVISIONING:-2}
+      # heavy stands (cert-manager + ACME, 4-node clusters) under two concurrent creates: create ~110 s + break up to ~250 s
+      PROVISIONING_TIMEOUT_MS: ${PROVISIONING_TIMEOUT_MS:-480000}
+      BREAK_TIMEOUT_MS: ${BREAK_TIMEOUT_MS:-300000}
+      # guards of the orchestrator (the defaults are those of the code; 0 switches a percentage threshold off)
+      EGRESS_HEARTBEAT_MAX_AGE_SEC: ${EGRESS_HEARTBEAT_MAX_AGE_SEC:-150}
+      DISK_GUARD_PATH: ${DISK_GUARD_PATH:-/}
+      DISK_REFUSE_PCT: ${DISK_REFUSE_PCT:-85}
+      DISK_KILL_PCT: ${DISK_KILL_PCT:-93}
+      SUBMISSION_BUILD_TIMEOUT_MS: ${SUBMISSION_BUILD_TIMEOUT_MS:-600000}
+      # limits of every kind node of a Kubernetes session; worst case MAX_K8S_SESSIONS x nodes x memory must fit the host
+      KIND_NODE_MEMORY_MB: ${KIND_NODE_MEMORY_MB:-4096}
+      KIND_NODE_CPUS: ${KIND_NODE_CPUS:-2}
+      KIND_NODE_PIDS: ${KIND_NODE_PIDS:-8192}
+      SEED_DEMO_PASSWORD: ""   # no demo account in production; the admin comes from ADMIN_* (.env)
+
+  db:
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:
+  wom_image_cache:

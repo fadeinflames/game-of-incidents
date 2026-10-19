@@ -1,0 +1,21 @@
+# systemd --user unit for the platform (rootless Docker). Install:
+#   cp deploy/wom.service ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now wom
+# Requires `loginctl enable-linger <user>` so it starts at boot without a login session.
+# Wants=, not Requires=, and no ExecStop: Requires would turn every restart of the rootless dockerd into a stop of this
+# unit and `docker compose stop` of the whole stack. Containers come back through `restart: unless-stopped`; to stop the
+# platform on purpose run `docker compose stop` by hand.
+[Unit]
+Description=Game of Incidents (docker compose)
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=%h/wom-platform
+Environment=DOCKER_HOST=unix:///run/user/%U/docker.sock
+ExecStart=/usr/bin/docker compose up -d --remove-orphans
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

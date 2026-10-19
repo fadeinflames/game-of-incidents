@@ -1,0 +1,23 @@
+{
+  "name": "wom-platform",
+  "version": "0.0.1",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "Game of Incidents: a browser platform for incident training",
+  "repository": { "type": "git", "url": "https://github.com/fadeinflames/game-of-incidents.git" },
+  "homepage": "https://github.com/fadeinflames/game-of-incidents#readme",
+  "bugs": "https://github.com/fadeinflames/game-of-incidents/issues",
+  "keywords": ["incident-response", "sre", "kubernetes", "training", "sandbox", "kind", "docker"],
+  "workspaces": [
+    "apps/*",
+    "services/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm test --workspaces --if-present"
+  }
+}

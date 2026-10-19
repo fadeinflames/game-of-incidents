@@ -1,0 +1,53 @@
+version: 2
+slug: invisible-network
+title: "Невидимая сеть"
+summary: "Утренний hardening security group прошёл канарейку, а в пик order-service получает таймауты от payment-service: межзональный трафик режется на нодах. Когда правила откатят, circuit breaker ещё пять минут будет держать endpoint'ы EJECTED."
+type: "Kubernetes, сеть между зонами, security groups, circuit breaker, каскадный отказ"
+difficulty: SENIOR
+durationMin: 25
+tags: [kubernetes, network, iptables, circuit-breaker, zones, cascade]
+
+contextJson:
+  infra: "Кластер kind из 4 нод (control-plane + воркеры в зонах a / b / d); DaemonSet sg-agent применяет ConfigMap security-groups через iptables; namespace production: order-service (3, зоны a/d), payment-service (2, зона b), frontend"
+  services: ["order-service", "payment-service", "sg-agent"]
+  setup: "Утром 08:30 сетевая команда применила новую security group «для hardening» (NET-8802). Канарейка прошла."
+  time: "Четверг, 14:30 (пик)"
+eventsJson:
+  - { t: 0, type: alert, title: "Алерты", body: "[FIRING:3] HighErrorRate order-service: 12 % 503. [FIRING:1] HighLatency payment-service p95: 5.2 s. kubectl get pods — все Running." }
+  - { t: 2, type: event, title: "Логи order-service", body: "[WARN] payment 10.244.2.5:8080 failed: URLError (timeout 2s). [WARN] circuit breaker: endpoint 10.244.2.5:8080 EJECTED for 300s after 3 consecutive failures." }
+hintsJson:
+  - { level: 1, penalty: 0,  text: "Направление: проверь связность попарно по зонам: из order-пода (зоны a/d) до payment-пода (зона b) по IP, и из соседа в зоне b. Паттерн укажет на слой." }
+  - { level: 2, penalty: 5,  text: "Инструмент: kubectl -n kube-system get configmap security-groups -o yaml (что менял NET-8802) и kubectl -n kube-system logs ds/sg-agent (какие DROP он поставил). После отката смотри GET /breaker на order-подах." }
+  - { level: 3, penalty: 15, text: "Почти ответ: в ConfigMap security-groups верни ingress tcp cross-zone allow, дождись агента (10 с), затем kubectl rollout restart deploy/order-service, чтобы сбросить circuit breaker." }
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+# the grader reads a 60 s traffic window, empty right after apply: no baseline
+test: { baseline: skip }
+
+environment:
+  kind: kubernetes
+  image: wom-tools:dev
+  cluster:
+    nodes: 4
+    workerLabels:
+      - { topology.kubernetes.io/zone: ru-central1-a, sg: prod-workloads }
+      - { topology.kubernetes.io/zone: ru-central1-b, sg: prod-workloads }
+      - { topology.kubernetes.io/zone: ru-central1-d, sg: prod-workloads }
+  manifests: ./k8s
+  images: ["wom-scenario/invisible-network:dev"]
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  startup: { expectedSec: 120, note: "Стенд из четырёх нод в трёх зонах с агентом security group на каждой." }
+  resources: { cpus: 1, memoryMb: 384, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: bastion
+  writable: ["/home", "/root", "/etc"]

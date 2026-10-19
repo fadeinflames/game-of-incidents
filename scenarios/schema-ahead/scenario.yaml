@@ -1,0 +1,48 @@
+version: 2
+slug: schema-ahead
+title: "Схема ушла вперёд"
+summary: "Релиз 2.0.0 не поднялся, CD откатил billing-api на 1.9.4, но стало только хуже: миграция уже удалила столбец, который старый код читает. Поды Ready, клиенты получают 500."
+type: "CI/CD, миграции, обратная совместимость схемы, PostgreSQL"
+difficulty: SENIOR
+durationMin: 24
+tags: [kubernetes, postgres, migration, rollback, cicd]
+
+contextJson:
+  infra: "Кластер kind из одной ноды: StatefulSet postgres (PostgreSQL 16), Deployment billing-api (2 реплики), Job миграции, генератор клиентского трафика"
+  services: ["billing-api", "postgres"]
+  setup: "Пайплайн сначала применяет миграцию, потом раскатывает приложение. Сегодня раскатка 2.0.0 не поднялась, CD откатил её."
+  time: "Вторник, 19:10"
+eventsJson:
+  - { t: 0, type: alert, title: "HighErrorRate: billing-api 100 %", body: "GET и POST /invoices отдают 500. Поды при этом Ready." }
+  - { t: 1, type: msg, title: "CD-система", body: "Sync 2.0.0 failed (pods not healthy), rolled back to 1.9.4." }
+hintsJson:
+  - { level: 1, penalty: 0,  text: "Направление: что откатилось, код или схема? Логи billing-api и Job миграции ответят за минуту." }
+  - { level: 2, penalty: 5,  text: "Инструмент: kubectl logs job/migrate-2-0-0 и psql '\\d invoices': миграция удалила total_cents. Либо верни столбец (и синхронизируй с amount_cents), либо докати 2.0.0, разобравшись, почему он не стартовал: его под удалён откатом вместе с логами, но ревизию можно выкатить ещё раз (kubectl rollout undo deploy/billing-api --to-revision=2) и прочитать логи нового пода." }
+  - { level: 3, penalty: 15, text: "Почти ответ: ALTER TABLE invoices ADD COLUMN total_cents bigint; UPDATE invoices SET total_cents = amount_cents; ALTER TABLE invoices ALTER COLUMN amount_cents DROP NOT NULL; (без третьей команды запись от 1.9.4 упрётся в NOT NULL, который поставила миграция) — или kubectl set env deploy/billing-api BILLING_CURRENCY=RUB APP_VERSION=2.0.0." }
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+# the grader reads a 60 s window of customer traffic, which is empty right after the manifests are applied: no baseline
+test: { baseline: skip }
+
+environment:
+  kind: kubernetes
+  image: wom-tools:dev
+  cluster: { nodes: 1 }
+  manifests: ./k8s
+  images: ["wom-scenario/schema-ahead:dev", "postgres:16-alpine"]
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  startup: { expectedSec: 75, note: "В кластер загружается образ PostgreSQL." }
+  resources: { cpus: 1, memoryMb: 384, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: bastion
+  writable: ["/home", "/root", "/etc"]

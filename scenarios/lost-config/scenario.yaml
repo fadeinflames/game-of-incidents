@@ -1,0 +1,49 @@
+version: 2
+slug: lost-config
+title: "Потерянная конфигурация"
+summary: "Разработчик прислал YAML с новым таймаутом, ты применил. ConfigMap обновлён, а приложение всё ещё живёт со старым значением, и в списке подов появился третий, который падает."
+type: "Kubernetes, ConfigMap, Secret, env"
+difficulty: JUNIOR
+durationMin: 18
+tags: [kubernetes, configmap, secret, env]
+
+contextJson:
+  infra: "Кластер kind из одной ноды: Deployment web-app (2 реплики) за Service web-app, ConfigMap web-app-config, Secret postgres-secret; namespace default"
+  services: ["web-app"]
+  setup: "Разработчик попросил поднять API_TIMEOUT с 10 до 30 и прислал YAML. Ты применил его 5 минут назад."
+  time: "Вторник, 10:00"
+eventsJson:
+  - { t: 0, type: msg, title: "Разработчик в Slack", body: "«@devops Приложение всё ещё использует старый таймаут! В логах timeout=10, а должно быть 30»" }
+  - { t: 3, type: alert, title: "KubePodCrashLooping: web-app", body: "Один из подов web-app перезапускается." }
+hintsJson:
+  - { level: 1, penalty: 0,  text: "Направление: значение из ConfigMap попадает в под только при его старте. Раскатка нового шаблона уже идёт, посмотри, на чём она застряла." }
+  - { level: 2, penalty: 5,  text: "Инструмент: kubectl logs у падающего пода скажет, чего ему не хватает; затем сравни блок env в kubectl get deploy web-app -o yaml с тем, что нужно приложению." }
+  - { level: 3, penalty: 15, text: "Почти ответ: присланный YAML перезаписал Deployment без переменной DATABASE_PASSWORD (secretKeyRef на postgres-secret). Верни её в env, а затем kubectl rollout restart: без него вернутся старые поды со старым таймаутом." }
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+guide: guide.md   # teaching stages: the folder yields two catalog entries (regular + "-tutorial")
+
+# the grader wants API_TIMEOUT=30 everywhere, which only exists after break.sh: the fresh cluster must NOT pass
+test: { baseline: fail }
+
+environment:
+  kind: kubernetes
+  image: wom-tools:dev
+  cluster: { nodes: 1 }
+  manifests: ./k8s
+  images: ["wom-scenario/lost-config:dev"]
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  startup: { expectedSec: 60 }
+  resources: { cpus: 1, memoryMb: 384, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: bastion
+  writable: ["/home", "/root", "/etc"]

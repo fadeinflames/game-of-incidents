@@ -1,0 +1,49 @@
+version: 2
+slug: cronjob-storm
+title: "Шторм из CronJob"
+summary: "В namespace batch CPU под 95 %, API отвечает медленно. Ночной экспорт перевели на «каждую минуту», и job'ы наезжают друг на друга: пять штук уже крутятся одновременно, и каждую минуту стартует новый."
+type: "Kubernetes, CronJob, concurrencyPolicy, batch"
+difficulty: JUNIOR
+durationMin: 18
+tags: [kubernetes, cronjob, jobs, batch]
+
+contextJson:
+  infra: "Кластер kind из одной ноды: namespace batch с CronJob nightly-export, Deployment api (2 реплики)"
+  services: ["nightly-export", "api"]
+  setup: "Команда данных попросила гонять экспорт чаще ночного и поставила расписание «каждую минуту, потом подберём». Экспорт длится около 15 минут."
+  time: "Среда, 09:05"
+eventsJson:
+  - { t: 0, type: alert, title: "NamespaceCPUSaturation: batch", body: "CPU в namespace batch на 95 % от лимитов, latency api выросла в 4 раза." }
+  - { t: 2, type: msg, title: "Команда данных в Slack", body: "«Мы утром поставили экспорт почаще, это же не могло ничего сломать? Он и так каждую ночь ходит.»" }
+hintsJson:
+  - { level: 1, penalty: 0,  text: "Направление: проблема не в Deployment. Посмотри на batch-объекты: kubectl get cronjobs,jobs,pods -n batch." }
+  - { level: 2, penalty: 5,  text: "Инструмент: kubectl -n batch get cronjob nightly-export -o yaml. Сравни schedule с длительностью экспорта (она видна в логах любого job'а) и посмотри, что в concurrencyPolicy." }
+  - { level: 3, penalty: 15, text: "Почти ответ: concurrencyPolicy: Allow + расписание каждую минуту при 15‑минутной job'е = накопление. Порядок: suspend у CronJob, удалить job'ы, поставить Forbid и разумное расписание, снять suspend." }
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+guide: guide.md
+
+# the grader demands concurrencyPolicy != Allow, which the untouched CronJob does not have: the fresh cluster must NOT pass
+test: { baseline: fail }
+
+environment:
+  kind: kubernetes
+  image: wom-tools:dev
+  cluster: { nodes: 1 }
+  manifests: ./k8s
+  images: ["wom-scenario/cronjob-storm:dev"]
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  startup: { expectedSec: 60 }
+  resources: { cpus: 1, memoryMb: 384, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: bastion
+  writable: ["/home", "/root", "/etc"]

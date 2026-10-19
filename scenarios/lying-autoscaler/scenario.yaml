@@ -1,0 +1,48 @@
+version: 2
+slug: lying-autoscaler
+title: "Лживый автоскейлер"
+summary: "После релиза 3.4 число реплик checkout-api ушло с 3 к максимуму 12 и держится там, latency выросла, планировщик занят. Клиентский трафик при этом не менялся: HPA масштабирует по метрике, которая растёт от самого масштабирования."
+type: "Kubernetes, HPA, metrics-server, feedback loop"
+difficulty: MIDDLE
+durationMin: 20
+tags: [kubernetes, hpa, autoscaling, metrics, cpu]
+
+contextJson:
+  infra: "Кластер kind из одной ноды с metrics-server: Deployment checkout-api под HPA (CPU 50 %, 2–12), headless-сервис checkout-api-peers, payment-api (2), генератор трафика 10 rps"
+  services: ["checkout-api", "payment-api"]
+  setup: "В 12:40 выкатили checkout-api 3.4: «cart consistency across pods»."
+  time: "Пятница, 13:15"
+eventsJson:
+  - { t: 0, type: alert, title: "HPA at maxReplicas: checkout-api", body: "Реплики 3 → 12 за 20 минут и держатся на максимуме при обычном трафике. p95 latency ×4. Узлы заняты планированием." }
+  - { t: 3, type: msg, title: "Тимлид в Slack", body: "«Трафик обычный, откуда нагрузка? Заморозьте что-нибудь, у нас через час демо.»" }
+hintsJson:
+  - { level: 1, penalty: 0,  text: "Направление: сравни утилизацию CPU на под с числом подов (kubectl top pods, kubectl get hpa -w). Если больше подов = больше CPU на каждом, это петля, а не нагрузка." }
+  - { level: 2, penalty: 5,  text: "Инструмент: kubectl rollout history deploy/checkout-api и kubectl logs deploy/checkout-api: что поменялось с релизом 3.4 и чем поды заняты друг с другом." }
+  - { level: 3, penalty: 15, text: "Почти ответ: релиз 3.4 включил peer gossip (PEER_GOSSIP в ConfigMap checkout-config), его стоимость растёт с числом подов. Заморозь HPA (min = max), выключи PEER_GOSSIP и перезапусти поды (переменная читается только при старте), затем верни HPA 2–12." }
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+# the grader reads a 60 s traffic window, empty right after apply, and the HPA needs a minute of metrics: no baseline
+test: { baseline: skip }
+
+environment:
+  kind: kubernetes
+  image: wom-tools:dev
+  cluster: { nodes: 1 }
+  manifests: ./k8s
+  images: ["wom-scenario/lying-autoscaler:dev", "registry.k8s.io/metrics-server/metrics-server:v0.7.2"]
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  startup: { expectedSec: 90, note: "В кластер ставится metrics-server; HPA начинает считать через минуту после старта." }
+  resources: { cpus: 1, memoryMb: 384, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: bastion
+  writable: ["/home", "/root", "/etc"]

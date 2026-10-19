@@ -1,0 +1,31 @@
+name: Ошибка / Bug
+description: Что-то работает не так / Something does not work
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: Что случилось / What happened
+      description: Что ожидал и что получил / Expected vs actual
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Как воспроизвести / Steps to reproduce
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Версия или коммит / Version or commit
+  - type: input
+    id: os
+    attributes:
+      label: ОС хоста / Host OS (Debian 13, Ubuntu 24.04, ...)
+  - type: textarea
+    id: logs
+    attributes:
+      label: Логи / Logs
+      description: Без паролей и токенов / No passwords or tokens
+      render: shell

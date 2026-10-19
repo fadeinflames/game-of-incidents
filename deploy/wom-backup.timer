@@ -1,0 +1,11 @@
+# cp deploy/wom-backup.* deploy/wom-failed@.service ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now wom-backup.timer
+[Unit]
+Description=Nightly Game of Incidents database backup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target

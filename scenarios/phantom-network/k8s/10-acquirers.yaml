@@ -1,0 +1,63 @@
+# "External" acquirers, simulated inside the cluster. A = primary (will go silent), B = backup (300 TPS, always answers).
+# Their behaviour is a property of the outside world, not of the on-call's cluster: the grader checks it was not tampered with.
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: acquirer-sim, namespace: default }
+data:
+  generation: "1"
+  aProfile: normal
+  bProfile: normal
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: acquirer-a, namespace: default, labels: { app: acquirer-a, tier: external } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: acquirer-a } }
+  template:
+    metadata: { labels: { app: acquirer-a, tier: external } }
+    spec:
+      containers:
+        - name: acquirer
+          image: wom-scenario/phantom-network:dev
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "/app/acquirer.py"]
+          env:
+            - { name: ACQUIRER_NAME, value: "A" }
+            - { name: UPSTREAM_PROFILE, valueFrom: { configMapKeyRef: { name: acquirer-sim, key: aProfile } } }
+          ports: [{ containerPort: 8443 }]
+          resources: { requests: { cpu: 10m, memory: 32Mi }, limits: { memory: 128Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: acquirer-a, namespace: default }
+spec:
+  selector: { app: acquirer-a }
+  ports: [{ port: 8443, targetPort: 8443 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: acquirer-b, namespace: default, labels: { app: acquirer-b, tier: external } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: acquirer-b } }
+  template:
+    metadata: { labels: { app: acquirer-b, tier: external } }
+    spec:
+      containers:
+        - name: acquirer
+          image: wom-scenario/phantom-network:dev
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "/app/acquirer.py"]
+          env:
+            - { name: ACQUIRER_NAME, value: "B" }
+            - { name: UPSTREAM_PROFILE, valueFrom: { configMapKeyRef: { name: acquirer-sim, key: bProfile } } }
+          ports: [{ containerPort: 8443 }]
+          resources: { requests: { cpu: 10m, memory: 32Mi }, limits: { memory: 128Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: acquirer-b, namespace: default }
+spec:
+  selector: { app: acquirer-b }
+  ports: [{ port: 8443, targetPort: 8443 }]

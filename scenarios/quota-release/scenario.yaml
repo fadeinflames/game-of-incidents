@@ -1,0 +1,49 @@
+version: 2
+slug: quota-release
+title: "Квота съела релиз"
+summary: "Релиз report-api висит седьмую минуту: новые поды не создаются, один старый уже удалён. В namespace production стоят ResourceQuota и LimitRange, и просто «поставить requests поменьше» не даёт."
+type: "Kubernetes, ResourceQuota, LimitRange, rollout"
+difficulty: JUNIOR
+durationMin: 18
+tags: [kubernetes, quota, limitrange, rollout, resources]
+
+contextJson:
+  infra: "Кластер kind из одной ноды: namespace production с ResourceQuota prod-quota (requests.cpu=2) и LimitRange; Deployments report-api (2), worker (4), cache (1)"
+  services: ["report-api", "worker", "cache"]
+  setup: "Команда выкатила report-api 1.8.0 и подняла ему requests.cpu с 200m до 400m, потому что старые лимиты «душили отчёты»."
+  time: "Вторник, 16:10"
+eventsJson:
+  - { t: 0, type: msg, title: "Релиз-инженер в Slack", body: "«Деплой report-api крутится уже 7 минут. Новая версия не поднимается, а один старый под уже удалился. Откатывать? Отчёты должны уйти клиентам к 17:00.»" }
+  - { t: 2, type: alert, title: "KubeDeploymentReplicasMismatch: production/report-api", body: "Желаемых реплик 2, доступных 1." }
+hintsJson:
+  - { level: 1, penalty: 0,  text: "Направление: поды не создаются вовсе, а не падают. Спроси у ReplicaSet, почему он не может их создать: ответ в Events." }
+  - { level: 2, penalty: 5,  text: "Инструмент: kubectl describe quota -n production покажет used/hard по CPU; kubectl get limitrange -n production -o yaml — ниже какого requests опускаться нельзя. Кто в namespace ест больше всех?" }
+  - { level: 3, penalty: 15, text: "Почти ответ: квоту менять нельзя, а release с 400m должен остаться. Освободи CPU у worker (уменьши реплики до 2 или requests до 100m+) и дождись rollout report-api. Если место в квоте появилось, а раскатка не двигается дольше минуты, ReplicaSet ждёт очередной попытки: kubectl -n production rollout restart deploy/report-api." }
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+guide: guide.md
+
+# the grader wants report-api rolled out at 400m, which exists only after break.sh: the fresh cluster must NOT pass
+test: { baseline: fail }
+
+environment:
+  kind: kubernetes
+  image: wom-tools:dev
+  cluster: { nodes: 1 }
+  manifests: ./k8s
+  images: ["wom-scenario/quota-release:dev"]
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  startup: { expectedSec: 60 }
+  resources: { cpus: 1, memoryMb: 384, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: bastion
+  writable: ["/home", "/root", "/etc"]

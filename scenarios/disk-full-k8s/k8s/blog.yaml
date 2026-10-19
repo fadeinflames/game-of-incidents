@@ -1,0 +1,105 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-config
+  namespace: default
+data:
+  # mounted as /etc/mysql/conf.d/wom.cnf; binlog expiry was never configured on this instance
+  wom.cnf: |
+    [mysqld]
+    log_bin = binlog
+    max_binlog_size = 4M
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  namespace: default
+spec:
+  clusterIP: None
+  selector: { app: mysql }
+  ports:
+    - { port: 3306, targetPort: 3306, name: mysql }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+  namespace: default
+  labels: { app: mysql }
+spec:
+  serviceName: mysql
+  replicas: 1
+  selector:
+    matchLabels: { app: mysql }
+  template:
+    metadata:
+      labels: { app: mysql }
+    spec:
+      containers:
+        - name: mysql
+          image: wom-scenario/disk-full-k8s:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { containerPort: 3306, name: mysql }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/mysql }
+            - { name: config, mountPath: /etc/mysql/conf.d }
+          readinessProbe:
+            httpGet: { path: /health, port: mysql }
+            periodSeconds: 5
+            failureThreshold: 2
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 192Mi }
+      volumes:
+        # the data volume: 64 MiB, memory-backed so that a full volume really answers ENOSPC (PVC on kind cannot)
+        - name: data
+          emptyDir: { medium: Memory, sizeLimit: 64Mi }
+        - name: config
+          configMap: { name: mysql-config }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: blog-app
+  namespace: default
+  labels: { app: blog-app }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: blog-app }
+  template:
+    metadata:
+      labels: { app: blog-app }
+    spec:
+      containers:
+        - name: blog-app
+          image: wom-scenario/disk-full-k8s:dev
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "/app/app.py"]
+          env:
+            - { name: DB_URL, value: "http://mysql:3306" }
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: blog-app
+  namespace: default
+spec:
+  selector: { app: blog-app }
+  ports:
+    - { port: 80, targetPort: http }

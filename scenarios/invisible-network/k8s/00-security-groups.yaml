@@ -1,0 +1,97 @@
+# VPC security groups, in-cluster edition: the network team owns this ConfigMap; sg-agent applies it on every worker.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: security-groups
+  namespace: kube-system
+  annotations:
+    owner: network-team
+    change-ticket: NET-8802
+data:
+  prod-workloads.rules: |
+    # security group "prod-workloads", attached to all worker nodes
+    # syntax: <direction> <proto> <scope> <action>
+    ingress tcp same-zone allow
+    ingress tcp cross-zone allow
+    egress  any any       allow
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sg-agent
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sg-agent
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sg-agent
+subjects:
+  - { kind: ServiceAccount, name: sg-agent, namespace: kube-system }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sg-agent
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sg-agent
+  namespace: kube-system
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["security-groups"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sg-agent
+  namespace: kube-system
+subjects:
+  - { kind: ServiceAccount, name: sg-agent, namespace: kube-system }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: sg-agent
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: sg-agent
+  namespace: kube-system
+  labels: { app: sg-agent }
+spec:
+  selector:
+    matchLabels: { app: sg-agent }
+  template:
+    metadata:
+      labels: { app: sg-agent }
+    spec:
+      serviceAccountName: sg-agent
+      hostNetwork: true  # sg-agent programs iptables of the node itself
+      nodeSelector: { sg: prod-workloads }
+      tolerations:
+        - { operator: Exists }
+      containers:
+        - name: agent
+          image: wom-scenario/invisible-network:dev
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "/app/sg-agent.sh"]
+          env:
+            - name: NODE_NAME
+              valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+          securityContext:
+            privileged: true  # iptables of the node needs it, a plain container cannot change them
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 64Mi }

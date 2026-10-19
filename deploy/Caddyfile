@@ -1,0 +1,102 @@
+# TLS via Let's Encrypt (HTTP-01 on :80). Same origin for the app and the terminal WebSocket.
+
+{
+	# A client that connects by IP address sends no SNI, and Caddy then looks for a certificate of the interface address,
+	# which is not the public one behind NAT or a port forwarder. With a domain this changes nothing; without one
+	# (WOM_DOMAIN is an IPv4 address, self-signed certificate) it makes the site answer at all.
+	default_sni {$WOM_DOMAIN}
+
+	# Behind a TCP proxy (one public IP shared by several machines, e.g. HAProxy routing by SNI) the proxy passes the real
+	# client address in a PROXY protocol header; without it every visitor would look like the proxy, and the per-address
+	# limits of the platform would become shared. Only WOM_TRUSTED_PROXY may send the header; connections from anywhere
+	# else are accepted as usual. The default, 127.0.0.1/32, sends no headers, so a server without a proxy is unaffected.
+	servers {
+		listener_wrappers {
+			proxy_protocol {
+				timeout 5s
+				allow {$WOM_TRUSTED_PROXY:127.0.0.1/32}
+			}
+			tls
+		}
+	}
+}
+
+{$WOM_DOMAIN} {
+	encode gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()"
+		# Report-Only first: Next.js and Tailwind need 'unsafe-inline' for now, and a policy that breaks the terminal
+		# would be worse than none. Watch the browser console for violations, then enforce and tighten it.
+		Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' wss://{$WOM_DOMAIN}; img-src 'self' data:; font-src 'self' data:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'"
+	}
+
+	# terminal WebSocket -> orchestrator (ADR-0002/0003); everything else -> web
+	handle /ws/term/* {
+		reverse_proxy orchestrator:8080 {
+			lb_try_duration 20s
+			lb_try_interval 250ms
+			# a config reload does not cut live terminals at once: the clients get 5 minutes to leave on their own instead of
+			# all reconnecting in the same second. (The orchestrator restarting still drops its own sockets: the client reconnects,
+			# and the dial retry above covers the seconds until the new process listens.)
+			stream_close_delay 5m
+		}
+	}
+	# uploads: the scenario zip is at most 5 MB (plus multipart overhead), the import file at most 4 MB
+	@uploads path /api/author/* /api/import
+	handle @uploads {
+		request_body {
+			max_size 6MB
+		}
+		reverse_proxy web:3000 {
+			# a deploy recreates web/orchestrator: retry the dial for a while instead of answering 502 at once
+			lb_try_duration 20s
+			lb_try_interval 250ms
+			header_down -X-Powered-By
+		}
+	}
+	handle {
+		request_body {
+			max_size 1MB
+		}
+		reverse_proxy web:3000 {
+			# a deploy recreates web/orchestrator: retry the dial for a while instead of answering 502 at once
+			lb_try_duration 20s
+			lb_try_interval 250ms
+			header_down -X-Powered-By
+		}
+	}
+
+	# the upstream stayed down longer than lb_try_duration (a deploy that went wrong, a crash loop): a page that says so and
+	# reloads itself instead of Caddy's empty 502.
+	# 503 + Retry-After tells clients and crawlers it is temporary. No curly braces in the body: Caddy reads them as placeholders.
+	handle_errors 502 503 504 {
+		header Content-Type "text/html; charset=utf-8"
+		header Cache-Control "no-store"
+		header Retry-After "15"
+		respond <<HTML
+			<!doctype html>
+			<html lang="ru">
+			<head>
+			<meta charset="utf-8">
+			<meta name="viewport" content="width=device-width, initial-scale=1">
+			<meta http-equiv="refresh" content="15">
+			<title>Game of Incidents: обновление</title>
+			</head>
+			<body style="font-family:system-ui,sans-serif;max-width:32rem;margin:20vh auto;padding:0 1rem">
+			<h1>Идёт обновление</h1>
+			<p>Game of Incidents перезапускается. Страница обновится сама через несколько секунд. Если так продолжается дольше пяти минут, напиши администратору.</p>
+			</body>
+			</html>
+			HTML 503
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

@@ -1,0 +1,134 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+  namespace: production
+  labels: { app: payment-service }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: payment-service }
+  template:
+    metadata:
+      labels: { app: payment-service }
+    spec:
+      # PCI segment: payment runs only in zone b
+      nodeSelector: { topology.kubernetes.io/zone: ru-central1-b }
+      containers:
+        - name: payment-service
+          image: wom-scenario/invisible-network:dev
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "/app/payment_service.py"]
+          env:
+            - { name: ZONE, value: ru-central1-b }
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-service
+  namespace: production
+spec:
+  selector: { app: payment-service }
+  ports:
+    - { port: 80, targetPort: http }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-service-peers
+  namespace: production
+spec:
+  clusterIP: None
+  selector: { app: payment-service }
+  ports:
+    - { port: 8080, targetPort: http }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-service
+  namespace: production
+  labels: { app: order-service }
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: order-service }
+  template:
+    metadata:
+      labels: { app: order-service }
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - { key: topology.kubernetes.io/zone, operator: In, values: [ru-central1-a, ru-central1-d] }
+      topologySpreadConstraints:
+        - { maxSkew: 1, topologyKey: topology.kubernetes.io/zone, whenUnsatisfiable: DoNotSchedule, labelSelector: { matchLabels: { app: order-service } } }
+      containers:
+        - name: order-service
+          image: wom-scenario/invisible-network:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: PAYMENT_PEERS, value: payment-service-peers }
+            - { name: BREAKER_EJECT_SECONDS, value: "300" }
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 30m, memory: 32Mi }
+            limits: { memory: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-service
+  namespace: production
+spec:
+  selector: { app: order-service }
+  ports:
+    - { port: 80, targetPort: http }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: production
+  labels: { app: frontend }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: frontend }
+  template:
+    metadata:
+      labels: { app: frontend }
+    spec:
+      # the edge lives in zone a (like the real ingress tier); its calls to order-service in zone d cross zones too
+      nodeSelector: { topology.kubernetes.io/zone: ru-central1-a }
+      containers:
+        - name: loadgen
+          image: wom-scenario/invisible-network:dev
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "/app/loadgen.py"]
+          env:
+            - { name: TARGET, value: "http://order-service" }
+          ports:
+            - { containerPort: 9090, name: stats }
+          resources:
+            requests: { cpu: 30m, memory: 32Mi }
+            limits: { memory: 64Mi }

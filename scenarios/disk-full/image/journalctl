@@ -1,0 +1,17 @@
+#!/bin/sh
+# journalctl shim: no journald here; logs live in /var/log. `journalctl -u <svc>` shows the service's log files.
+unit=""; lines=50; follow=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -u|--unit) unit=${2%.service}; shift ;;
+    -n|--lines) lines=$2; shift ;;
+    -f|--follow) follow=1 ;;
+    -xe|-x|-e|--no-pager) ;;
+    *) ;;
+  esac
+  shift
+done
+if [ -z "$unit" ]; then echo "journalctl: no journald on this host. Logs: /var/log/syslog (if any), /var/log/<service>/*.log" >&2; ls /var/log; exit 0; fi
+files=$(ls /var/log/$unit/*.log /var/log/$unit.log 2>/dev/null)
+[ -n "$files" ] || { echo "journalctl: no log files for $unit under /var/log (try: ls /var/log; service $unit status)" >&2; exit 1; }
+if [ "$follow" = 1 ]; then exec tail -n "$lines" -F $files; else exec tail -n "$lines" $files; fi

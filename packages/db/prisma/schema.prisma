@@ -1,0 +1,173 @@
+// WOM Platform data model. Auth models ported from fadeinflames/wom-games (prisma/schema.prisma).
+// Scenario = v1 fields + v2 environment (ADR-0005). TrainingSession/SessionEvent per ADR-0003.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Difficulty {
+  JUNIOR
+  MIDDLE
+  SENIOR
+}
+
+enum SubmissionStatus {
+  UPLOADED   // lint passed, waiting for a moderator to run build + regression
+  LINT_FAILED
+  TESTING
+  PASSED
+  FAILED
+  APPROVED   // published as a Scenario
+  REJECTED
+}
+
+enum SessionStatus {
+  REQUESTED
+  PROVISIONING
+  READY
+  RUNNING
+  CHECKING
+  FINISHED
+  EXPIRED
+  KILLED
+  FAILED
+}
+
+model User {
+  id               String            @id @default(cuid())
+  email            String?           @unique   // optional: registration needs only login + password (owner decision 2026-09-30)
+  username         String            @unique
+  passwordHash     String
+  role             String            @default("user") // user | admin
+  lastLoginAt      DateTime?
+  disabledAt       DateTime?         // set automatically after INACTIVE_ACCOUNT_DAYS without a login, or by an admin
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  sessions         Session[]
+  trainingSessions TrainingSession[]
+  submissions      ScenarioSubmission[]
+  scenarios        Scenario[]        @relation("ScenarioAuthor")
+}
+
+// Browser auth session (cookie), ported from wom-games.
+model Session {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Scenario {
+  id            String     @id @default(cuid())
+  slug          String     @unique
+  schemaVersion Int        @default(2)
+  title         String
+  summary       String
+  type          String
+  difficulty    Difficulty @default(MIDDLE)
+  durationMin   Int        @default(20)
+  tags          String[]   @default([])
+  // v1 fields (kept for import compatibility and future leader mode)
+  contextJson   Json
+  eventsJson    Json
+  hintsJson     Json
+  actionsJson   Json
+  gmScriptJson  Json?
+  // v2
+  briefMd        String?
+  debriefMd      String?  // never sent to the player before the session is finished
+  guideMd        String?  // teaching stages (## headings), revealed one by one, penalty-free
+  environmentJson Json?   // environment minus secret scripts; null => text-only scenario
+  breakScript    String?  // SECRET
+  graderScript   String?  // SECRET
+  solutionScript String?  // SECRET
+  isPublished    Boolean  @default(true)
+  authorId       String?
+  author         User?    @relation("ScenarioAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  source         String?  // "seed" = created from the scenarios/ folder by the seed (which unpublishes it once the folder is gone); null = imported by an admin or published by moderation
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  trainingSessions TrainingSession[]
+  submissions    ScenarioSubmission[]
+
+  @@index([authorId])
+}
+
+// A scenario folder uploaded by a user (zip). Lint runs at upload; build + regression run only when a moderator asks;
+// publishing is a moderator decision (owner: anyone may upload, moderation is required).
+model ScenarioSubmission {
+  id            String           @id @default(cuid())
+  authorId      String
+  author        User             @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  slug          String
+  title         String
+  status        SubmissionStatus @default(UPLOADED)
+  archive       Bytes            // the uploaded zip (<= 5 MB)
+  record        Json?            // ImportRecord produced by the loader (image tags rewritten at test time)
+  lintReport    Json?
+  testReport    Json?
+  moderatorNote String?
+  scenarioId    String?
+  scenario      Scenario?        @relation(fields: [scenarioId], references: [id], onDelete: SetNull)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  @@index([authorId, createdAt])
+  @@index([status, createdAt])
+  @@index([scenarioId])
+}
+
+model TrainingSession {
+  id            String        @id @default(cuid())
+  userId        String
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scenarioId    String
+  scenario      Scenario      @relation(fields: [scenarioId], references: [id], onDelete: Restrict)
+  status        SessionStatus @default(REQUESTED)
+  provider      String        @default("docker") // docker | kubernetes (ADR-0008), for quotas
+  runtimeHandle Json?         // { provider, containerId, networkId, clusterName?, kubeconfig? }
+  startupMs     Int?          // requested -> ready, for the SLO
+  startupPhase  String?       // last provisioning phase (queued | cluster | images | tools | manifests | sandbox | break), for the waiting screen
+  provisioningStartedAt DateTime? // set when a provisioning slot is taken; the timeout counts from here, not from createdAt
+  checkStartedAt DateTime?    // set on RUNNING -> CHECKING; the reconciler returns a check that outlived the grader timeout to RUNNING
+  clientIp      String?       // address the session was requested from, for the per-address quota (MAX_SESSIONS_PER_IP)
+  scenarioSnapshot Json?      // environment, hints, break and grader scripts as they were when the session was requested (a re-import must not change a running session); cleared when the session has ended; null on rows from before this column
+  createdAt     DateTime      @default(now())
+  readyAt       DateTime?
+  expiresAt     DateTime?
+  finishedAt    DateTime?
+  result        Json?         // last grader result
+  checkAttempts Int           @default(0)
+  hintsUsed     Int[]         @default([])
+  score         Int?
+  lastError     String?
+  events        SessionEvent[]
+
+  @@index([userId, status])
+  @@index([status, expiresAt])
+  @@index([clientIp, status])
+  @@index([scenarioId, status])
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}
+
+model SessionEvent {
+  id        String          @id @default(cuid())
+  sessionId String
+  session   TrainingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  kind      String          // status | hint | check | terminal | error
+  payload   Json?
+  createdAt DateTime        @default(now())
+
+  @@index([sessionId, createdAt])
+  @@index([createdAt]) // the retention job deletes by age
+}

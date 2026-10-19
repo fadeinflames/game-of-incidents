@@ -1,0 +1,71 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-app-config
+  namespace: default
+data:
+  API_TIMEOUT: "10"
+  DATABASE_HOST: "postgres"
+  LOG_LEVEL: "info"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-secret
+  namespace: default
+type: Opaque
+stringData:
+  username: webapp
+  password: s3cr3t-pg-pass
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app
+  namespace: default
+  labels: { app: web-app }
+  annotations:
+    kubernetes.io/change-cause: "initial deploy"
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: web-app }
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  template:
+    metadata:
+      labels: { app: web-app }
+    spec:
+      containers:
+        - name: web-app
+          image: wom-scenario/lost-config:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: API_TIMEOUT
+              valueFrom: { configMapKeyRef: { name: web-app-config, key: API_TIMEOUT } }
+            - name: DATABASE_HOST
+              valueFrom: { configMapKeyRef: { name: web-app-config, key: DATABASE_HOST } }
+            - name: LOG_LEVEL
+              valueFrom: { configMapKeyRef: { name: web-app-config, key: LOG_LEVEL } }
+            - name: DATABASE_PASSWORD
+              valueFrom: { secretKeyRef: { name: postgres-secret, key: password } }
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 3
+            failureThreshold: 2
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-app
+  namespace: default
+spec:
+  selector: { app: web-app }
+  ports:
+    - { port: 80, targetPort: http }

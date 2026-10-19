@@ -1,0 +1,49 @@
+version: 2
+slug: disk-full-k8s
+title: "Полный диск в кластере"
+summary: "Блог отдаёт 500 и не даёт ни опубликовать статью, ни оставить комментарий. blog-app перезапускается раз за разом, mysql-0 выпал из Ready: том с данными заполнен на 100 %."
+type: "Kubernetes, StatefulSet, disk space, MySQL binlog"
+difficulty: JUNIOR
+durationMin: 18
+tags: [kubernetes, disk, mysql, statefulset, storage]
+
+contextJson:
+  infra: "Кластер kind из одной ноды: StatefulSet mysql (1 реплика, том 64 Mi) за headless Service mysql, Deployment blog-app за Service blog-app; ConfigMap mysql-config"
+  services: ["blog-app", "mysql"]
+  setup: "База блога живёт 240 дней без обслуживания. Ротацию бинлогов никто не настраивал."
+  time: "Понедельник, 15:02"
+eventsJson:
+  - { t: 0, type: msg, title: "Контент-менеджер в Slack", body: "«@devops Не могу опубликовать новую статью! При сохранении — ошибка 500. Комментарии тоже не добавляются 😰»" }
+  - { t: 2, type: alert, title: "KubePodCrashLooping: blog-app", body: "Контейнер blog-app перезапускается раз за разом: liveness-проба не проходит." }
+hintsJson:
+  - { level: 1, penalty: 0,  text: "Направление: blog-app жертва, смотри на базу. Логи mysql-0 и df внутри пода скажут, что именно кончилось." }
+  - { level: 2, penalty: 5,  text: "Инструмент: kubectl exec mysql-0 -- du -sh /var/lib/mysql/* покажет, что съело том; mysql -e \"SHOW BINARY LOGS\" покажет, сколько бинлогов накопилось. Не удаляй их rm: у MySQL есть PURGE BINARY LOGS." }
+  - { level: 3, penalty: 15, text: "Почти ответ: PURGE BINARY LOGS BEFORE NOW() - INTERVAL 1 DAY освободит место, SET GLOBAL binlog_expire_logs_seconds и та же строка в ConfigMap mysql-config не дадут диску заполниться снова." }
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+guide: guide.md
+
+# the grader also wants binlog expiry configured, which the untouched instance never had: the fresh cluster must NOT pass
+test: { baseline: fail }
+
+environment:
+  kind: kubernetes
+  image: wom-tools:dev
+  cluster: { nodes: 1 }
+  manifests: ./k8s
+  images: ["wom-scenario/disk-full-k8s:dev"]
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  startup: { expectedSec: 60 }
+  resources: { cpus: 1, memoryMb: 384, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: bastion
+  writable: ["/home", "/root", "/etc"]

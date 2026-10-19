@@ -1,0 +1,100 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shop
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-api
+  namespace: shop
+  labels: { app: backend-api }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: backend-api }
+  template:
+    metadata:
+      labels: { app: backend-api }
+    spec:
+      containers:
+        - name: api
+          image: wom-scenario/lost-in-dns:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: ROLE, value: backend-api }
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 48Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-api
+  namespace: shop
+spec:
+  selector: { app: backend-api }
+  ports:
+    - { port: 80, targetPort: http }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: shop
+  labels: { app: frontend }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: frontend }
+  template:
+    metadata:
+      labels: { app: frontend }
+    spec:
+      containers:
+        - name: frontend
+          image: wom-scenario/lost-in-dns:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: ROLE, value: frontend }
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 48Mi }
+---
+# talks to partner APIs in the corporate zone (payments-gateway.corp.internal) on behalf of the shop
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: external-api-proxy
+  namespace: shop
+  labels: { app: external-api-proxy }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: external-api-proxy }
+  template:
+    metadata:
+      labels: { app: external-api-proxy }
+    spec:
+      containers:
+        - name: proxy
+          image: wom-scenario/lost-in-dns:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: ROLE, value: proxy }
+            - { name: RESOLVE, value: "payments-gateway.corp.internal,backend-api.shop.svc.cluster.local" }
+          ports:
+            - { containerPort: 9090, name: stats }
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 48Mi }

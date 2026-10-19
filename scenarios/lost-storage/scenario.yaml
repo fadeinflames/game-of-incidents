@@ -1,0 +1,48 @@
+version: 2
+slug: lost-storage
+title: "Пропавшее хранилище"
+summary: "Ночью security ротировала ключ объектного хранилища. С утра media-api отдаёт 500 на загрузке (хранилище не знает его ключ доступа), старые файлы при этом читаются. Синхронизация секретов должна была всё подхватить, но не подхватила."
+type: "Kubernetes, object storage, credentials, secret sync"
+difficulty: MIDDLE
+durationMin: 20
+tags: [kubernetes, s3, secrets, rbac, rotation]
+
+contextJson:
+  infra: "Кластер kind из одной ноды: S3-совместимое хранилище VersityGW (namespace storage), vault-namespace security с Secret s3-credentials и Role secret-reader, namespace media с media-api (2) и CronJob secret-sync"
+  services: ["media-api", "secret-sync", "s3"]
+  setup: "Ночью security ротировала S3 access key и ужесточила политику доступа к vault."
+  time: "Понедельник, 10:05"
+eventsJson:
+  - { t: 0, type: alert, title: "UploadErrorRate: media-api", body: "Новые аватары и вложения не загружаются: 500 на upload. Чтение работает." }
+  - { t: 2, type: msg, title: "Security в Slack", body: "«Ночью ротировали ключ хранилища по плану, плюс подчистили доступы к vault. Приложения должны были подхватить сами.»" }
+hintsJson:
+  - { level: 1, penalty: 0,  text: "Направление: «no user exists with this access key» — это ключ, который приложение реально использует, против ключа, который сейчас валиден. Версия ключа записана в аннотации security/key-version у Secret: сравни её в media/media-s3 и в security/s3-credentials." }
+  - { level: 2, penalty: 5,  text: "Инструмент: kubectl -n media get jobs и логи последнего secret-sync: он должен был обновить media-s3. kubectl auth can-i get secret/s3-credentials -n security --as=system:serviceaccount:media:secret-sync." }
+  - { level: 3, penalty: 15, text: "Почти ответ: security удалила RoleBinding secret-sync-reader в namespace security. Верни его (role secret-reader → SA media:secret-sync), запусти secret-sync вручную из CronJob, дождись rollout media-api." }
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+# the grader also expects files uploaded before the rotation (created by break.sh): the fresh cluster must NOT pass
+test: { baseline: fail }
+
+environment:
+  kind: kubernetes
+  image: wom-tools:dev
+  cluster: { nodes: 1 }
+  manifests: ./k8s
+  images: ["wom-scenario/lost-storage:dev", "versity/versitygw:v1.8.0"]
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  startup: { expectedSec: 90, note: "В кластер загружается образ S3-совместимого хранилища." }
+  resources: { cpus: 1, memoryMb: 384, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: bastion
+  writable: ["/home", "/root", "/etc"]

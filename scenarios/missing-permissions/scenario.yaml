@@ -1,0 +1,48 @@
+version: 2
+slug: missing-permissions
+title: "Недостающие права в кластере"
+summary: "Security убрала cluster-admin у сервисного аккаунта бэкапа и выдала «минимальные» права. Ночной db-backup упал с exit 1, снапшота за сегодня нет, RPO нарушен. В кластере при этом всё зелёное."
+type: "Kubernetes, RBAC, ServiceAccount, скрытая зависимость"
+difficulty: SENIOR
+durationMin: 22
+tags: [kubernetes, rbac, backup, cronjob, security]
+
+contextJson:
+  infra: "Кластер kind из одной ноды: namespace data (database, Secret db-credentials), namespace backup (CronJob db-backup под SA backup-controller, backup-store)"
+  services: ["db-backup", "database", "backup-store"]
+  setup: "Security закрыла SEC-1187: cluster-admin у backup-controller заменён на Role, написанный по манифесту job'а."
+  time: "Четверг, 07:30"
+eventsJson:
+  - { t: 0, type: alert, title: "BackupFailed: db-backup", body: "Ночной запуск завершился с exit 1. Снапшота за сегодня в backup-store нет." }
+  - { t: 3, type: msg, title: "Security в Slack", body: "«Вчера закрыли SEC-1187, у бэкапа больше нет cluster-admin. Если что-то нужно — говорите точно что, admin обратно не дадим.»" }
+hintsJson:
+  - { level: 1, penalty: 0,  text: "Направление: под job'а запускается и падает сам. Его логи скажут, на каком шаге; в Kubernetes «всё зелёное» ничего не значит для того, кто ходит в API." }
+  - { level: 2, penalty: 5,  text: "Инструмент: kubectl -n backup logs job/<имя> и kubectl auth can-i get secret/db-credentials -n data --as=system:serviceaccount:backup:backup-controller. Сравни, что job делает, с тем, что ему разрешили." }
+  - { level: 3, penalty: 15, text: "Почти ответ: Role в namespace data с get на secrets и resourceNames: [db-credentials], RoleBinding на SA backup:backup-controller, затем ручной запуск kubectl create job --from=cronjob/db-backup." }
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+# the grader wants a snapshot younger than 30 min, which the fresh cluster does not have: it must NOT pass
+test: { baseline: fail }
+
+environment:
+  kind: kubernetes
+  image: wom-tools:dev
+  cluster: { nodes: 1 }
+  manifests: ./k8s
+  images: ["wom-scenario/missing-permissions:dev"]
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  startup: { expectedSec: 60 }
+  resources: { cpus: 1, memoryMb: 384, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: bastion
+  writable: ["/home", "/root", "/etc"]

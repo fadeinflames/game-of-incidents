@@ -1,0 +1,49 @@
+version: 2
+slug: friday-deploy
+title: "Пятничный деплой"
+summary: "Пятница, 17:32. Только что выкатили api-backend v2.1.3, и поды один за другим уходят в CrashLoopBackOff. Клиенты получают 502, тимлид горит в Slack, разработчики уже ушли."
+type: "Kubernetes, OOMKilled, rollout undo, каскадный отказ"
+difficulty: MIDDLE
+durationMin: 20
+tags: [kubernetes, oom, rollback, deploy, memory]
+
+contextJson:
+  infra: "Кластер kind из одной ноды: Deployment api-backend (3 реплики, limit 96Mi) за Service api-backend, worker (2), генератор клиентского трафика"
+  services: ["api-backend", "worker"]
+  setup: "Только что задеплоили api-backend v2.1.3. Новая фича — загрузка больших файлов."
+  time: "Пятница, 17:30"
+eventsJson:
+  - { t: 0, type: alert, title: "PagerDuty: PodCrashLooping", body: "Pod api-backend-…: Restarts 3. Time 17:32." }
+  - { t: 3, type: alert, title: "HighErrorRate: 25 %", body: "502 Bad Gateway, 503 Service Unavailable. Второй под тоже в CrashLoop." }
+  - { t: 4, type: msg, title: "Тимлид в Slack", body: "🔥 «@sre У нас серьёзные проблемы на проде! Клиенты жалуются массово. Что происходит?»" }
+hintsJson:
+  - { level: 1, penalty: 0,  text: "Направление: что изменилось перед алертом и чем именно поды падают? Начни с того, что видно в kubectl get pods." }
+  - { level: 2, penalty: 5,  text: "Инструмент: kubectl describe pod (блок Last State), kubectl logs --previous и kubectl rollout history deploy/api-backend: последнее покажет, какая ревизия что принесла." }
+  - { level: 3, penalty: 15, text: "Почти ответ: подов убивает ядро за лимит памяти (OOMKilled, exit code 137), утечку принёс v2.1.3. Верни предыдущую ревизию (kubectl rollout undo deploy/api-backend), дождись rollout status и минуту-две, пока success rate клиентов вернётся к норме." }
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+# the grader reads a 60 s window of customer traffic, which is empty right after the manifests are applied: no baseline
+test: { baseline: skip }
+
+environment:
+  kind: kubernetes
+  image: wom-tools:dev
+  cluster: { nodes: 1 }
+  manifests: ./k8s
+  images: ["wom-scenario/friday-deploy:dev"]
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  startup: { expectedSec: 60 }
+  resources: { cpus: 1, memoryMb: 384, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: bastion
+  writable: ["/home", "/root", "/etc"]

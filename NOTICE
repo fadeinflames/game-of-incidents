@@ -1,0 +1,86 @@
+Game of Incidents
+=================
+
+Copyright 2026 Maxim Gusev (сопровождающий проекта, GitHub fadeinflames).
+
+Лицензия кода платформы: Apache License 2.0 (файл LICENSE).
+Лицензия сценариев и документации: CC BY 4.0 (файл LICENSE-CONTENT.md).
+
+Этот файл перечисляет то, что в репозитории или в его сборке принадлежит не владельцу
+проекта, и условия, на которых оно используется. Лицензии указаны по сведениям
+проектов-источников. Текст лицензии лежит в репозитории только там, где он есть в
+заголовке самого файла (cert-manager, ниже).
+
+
+Происхождение и авторство
+-------------------------
+
+Game of Incidents - наследник текстовой игры wom-games
+(https://github.com/fadeinflames/wom-games) того же автора: её 18 кейсов перенесены в живые
+окружения, часть кода (авторизация, схема базы) перенесена из неё. У wom-games один автор и
+нет сторонних контрибьюторов, поэтому этот код публикуется здесь под Apache-2.0.
+
+Кейс «Фантомная сеть» (scenarios/phantom-network): автор Кирилл Борисов, кейс придуман
+совместно с сопровождающим проекта и публикуется с согласия автора под CC BY 4.0.
+
+
+Сторонние файлы в репозитории (вендорные манифесты)
+---------------------------------------------------
+
+scenarios/cert-expired/k8s/00-cert-manager.yaml
+    cert-manager v1.17.2 (CRD, RBAC, Deployments). Copyright 2022 The cert-manager Authors.
+    Лицензия: Apache License 2.0 (http://www.apache.org/licenses/LICENSE-2.0).
+    Заголовок с уведомлением об авторских правах и лицензии сохранён в начале файла.
+    Проект: https://github.com/cert-manager/cert-manager
+
+scenarios/cert-expired/k8s/01-ingress-nginx.yaml
+scenarios/ghost-route/k8s/00-ingress-nginx.yaml
+    Манифесты контроллера ingress-nginx без admission webhook, образ
+    registry.k8s.io/ingress-nginx/controller:v1.12.1. Структура и имена ресурсов
+    повторяют официальный манифест проекта Kubernetes ingress-nginx (файлы адаптированы:
+    без admission webhook). Лицензия проекта: Apache License 2.0.
+    Проект: https://github.com/kubernetes/ingress-nginx
+
+scenarios/lying-autoscaler/k8s/00-metrics-server.yaml
+    Манифест metrics-server, образ registry.k8s.io/metrics-server/metrics-server:v0.7.2.
+    Структура и имена ресурсов повторяют официальный components.yaml проекта
+    Kubernetes SIGs metrics-server (файл адаптирован под kind: флаг --kubelet-insecure-tls). Лицензия проекта:
+    Apache License 2.0.
+    Проект: https://github.com/kubernetes-sigs/metrics-server
+
+
+Сторонние образы и программы, которые сборка подтягивает (в репозитории их кода нет)
+------------------------------------------------------------------------------------
+
+Образы сценариев Kubernetes (scenarios/*/scenario.yaml, scenarios/*/k8s):
+    ghcr.io/letsencrypt/pebble:2.10.1 (Let's Encrypt Pebble, MPL-2.0)
+    registry.k8s.io/coredns/coredns:v1.14.6 (CoreDNS, Apache-2.0)
+    prom/prometheus:v2.55.1 (Prometheus, Apache-2.0)
+    versity/versitygw:v1.8.0 (VersityGW, Apache-2.0)
+    postgres:16-alpine (PostgreSQL License)
+    nginx:1.27-alpine (BSD-2-Clause)
+
+Базовые образы платформы и сценариев (Dockerfile):
+    node:22-alpine, python:3.12-alpine, alpine:3.22, debian:bookworm-slim, caddy:2-alpine
+    (Node.js - MIT; Python - PSF License; Caddy - Apache-2.0; пакеты Alpine и Debian
+    распространяются под своими лицензиями)
+
+Образ нод kind, который платформа загружает для каждой кластерной сессии:
+    kindest/node (sigs.k8s.io/kind, Apache-2.0; версия в services/orchestrator/Dockerfile и scenarios/*/scenario.yaml)
+
+На хосте скрипты установки ставят Docker Engine в rootless-режиме (Apache-2.0), kind (Apache-2.0)
+и Node.js (MIT) из официальных репозиториев.
+
+Веб-образ содержит библиотеку sharp с libvips (LGPL-3.0-or-later): используется без изменений,
+подгружается динамически как отдельный бинарный файл и может быть заменена пользователем.
+Карточка предпросмотра ссылок (apps/web/src/app/opengraph-image.tsx) рисуется библиотекой
+next/og (MPL-2.0) встроенным в неё шрифтом Geist (SIL Open Font License 1.1).
+
+Бинарники, скачиваемые при сборке образов:
+    kind (images: services/orchestrator/Dockerfile, ARG KIND_VERSION) - Apache-2.0
+    kubectl (images/tools/Dockerfile, ARG KUBECTL_VERSION) - Apache-2.0
+    docker-cli из пакетов Alpine - Apache-2.0
+
+Зависимости npm перечислены в package-lock.json; их лицензии лежат в самих пакетах.
+Основные: Next.js, React, Tailwind CSS, xterm.js (MIT), Prisma (Apache-2.0).
+Полный отчёт по лицензиям зависимостей: docs/legal/third-party-licenses.md (создаётся скриптом scripts/license-report.mjs).

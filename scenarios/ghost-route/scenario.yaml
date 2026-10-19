@@ -1,0 +1,48 @@
+version: 2
+slug: ghost-route
+title: "Призрачный маршрут"
+summary: "Фронтенд выкатил catalog v2 с клиентским роутингом, и с тех пор мобильное приложение получает от api.shop.local HTML вместо JSON. Ошибок 5xx нет, все поды Ready, контроллер делает ровно то, что написано в Ingress'ах."
+type: "Kubernetes, ingress-nginx, маршрутизация, regex paths"
+difficulty: MIDDLE
+durationMin: 20
+tags: [kubernetes, ingress, nginx, routing]
+
+contextJson:
+  infra: "Кластер kind из одной ноды с ingress-nginx: Ingress api (api.shop.local/api → api-service), web (shop.local/ → web-frontend), генератор клиентов через Service контроллера"
+  services: ["ingress-nginx", "api-service", "web-frontend"]
+  setup: "В 11:20 фронтенд-команда выкатила catalog v2: SPA с клиентским роутингом и свой Ingress."
+  time: "Среда, 11:40"
+eventsJson:
+  - { t: 0, type: alert, title: "MobileAppErrors: JSON parse failed", body: "Мобильные клиенты не могут разобрать ответ GET /api/orders: unexpected token '<'." }
+  - { t: 2, type: msg, title: "Фронтенд в Slack", body: "«Мы выкатили catalog v2 в 11:20, всё прошло, каталог работает. У нас всё зелёное.»" }
+hintsJson:
+  - { level: 1, penalty: 0,  text: "Направление: 200 с HTML вместо JSON — это маршрутизация, а не приложение. kubectl get ingress: кто ещё объявил хост api.shop.local?" }
+  - { level: 2, penalty: 5,  text: "Инструмент: kubectl get ingress и kubectl describe ingress catalog-v2; а как nginx на самом деле выбирает location, видно в сгенерированном nginx.conf в поде контроллера (grep по location в блоке хоста)." }
+  - { level: 3, penalty: 15, text: "Почти ответ: use-regex у catalog-v2 действует на весь хост, а путь /(.*) длиннее /api и стоит в nginx.conf первым. Убери правило для api.shop.local из Ingress catalog-v2 (kubectl patch … remove /spec/rules/1), оставив SPA-роутинг на shop.local." }
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+# the grader reads a 60 s client window, empty right after apply: no baseline
+test: { baseline: skip }
+
+environment:
+  kind: kubernetes
+  image: wom-tools:dev
+  cluster: { nodes: 1 }
+  manifests: ./k8s
+  images: ["wom-scenario/ghost-route:dev", "registry.k8s.io/ingress-nginx/controller:v1.12.1"]
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  startup: { expectedSec: 100, note: "В кластер загружается и стартует ingress-nginx." }
+  resources: { cpus: 1, memoryMb: 384, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: bastion
+  writable: ["/home", "/root", "/etc"]

@@ -1,0 +1,203 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: zonal-ssd
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+---
+# zonal disks: each one exists in exactly one availability zone (like a cloud block device)
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: database-disk-0
+  labels: { app: database }
+spec:
+  capacity: { storage: 50Gi }
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: zonal-ssd
+  claimRef: { namespace: production, name: data-database-0 }
+  hostPath: { path: /var/lib/database-0, type: DirectoryOrCreate }  # the "zonal disk" of the story: a directory on the kind node, there is no cloud storage
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - { key: topology.kubernetes.io/zone, operator: In, values: [ru-central1-a] }
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: database-disk-1
+  labels: { app: database }
+spec:
+  capacity: { storage: 50Gi }
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: zonal-ssd
+  claimRef: { namespace: production, name: data-database-1 }
+  hostPath: { path: /var/lib/database-1, type: DirectoryOrCreate }  # the "zonal disk" of the story: a directory on the kind node, there is no cloud storage
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - { key: topology.kubernetes.io/zone, operator: In, values: [ru-central1-b] }
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: database-disk-2
+  labels: { app: database }
+spec:
+  capacity: { storage: 50Gi }
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: zonal-ssd
+  claimRef: { namespace: production, name: data-database-2 }
+  hostPath: { path: /var/lib/database-2, type: DirectoryOrCreate }  # the "zonal disk" of the story: a directory on the kind node, there is no cloud storage
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - { key: topology.kubernetes.io/zone, operator: In, values: [ru-central1-a] }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-database-0
+  namespace: production
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: zonal-ssd
+  volumeName: database-disk-0
+  resources: { requests: { storage: 50Gi } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-database-1
+  namespace: production
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: zonal-ssd
+  volumeName: database-disk-1
+  resources: { requests: { storage: 50Gi } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-database-2
+  namespace: production
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: zonal-ssd
+  volumeName: database-disk-2
+  resources: { requests: { storage: 50Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: database
+  namespace: production
+spec:
+  clusterIP: None
+  selector: { app: database }
+  ports:
+    - { port: 5432, targetPort: 5432 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: database
+  namespace: production
+  labels: { app: database }
+spec:
+  serviceName: database
+  replicas: 3
+  selector:
+    matchLabels: { app: database }
+  template:
+    metadata:
+      labels: { app: database }
+    spec:
+      nodeSelector: { node-pool: db }
+      containers:
+        - name: database
+          image: wom-scenario/stuck-drain:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: ROLE, value: database }
+            - { name: PORT, value: "5432" }
+            - { name: DATADIR, value: /var/lib/database }
+          ports:
+            - { containerPort: 5432, name: db }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/database }
+          readinessProbe:
+            httpGet: { path: /health, port: db }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 64Mi }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: zonal-ssd
+        resources: { requests: { storage: 50Gi } }
+---
+# agreed with the data team: at most one replica may be down during maintenance (so minAvailable should be 2).
+# Somebody "hardened" it to 3 after the last incident; nobody noticed, because nothing was drained since.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: database-pdb
+  namespace: production
+spec:
+  minAvailable: 3
+  selector:
+    matchLabels: { app: database }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-backend
+  namespace: production
+  labels: { app: app-backend }
+spec:
+  replicas: 5
+  selector:
+    matchLabels: { app: app-backend }
+  template:
+    metadata:
+      labels: { app: app-backend }
+    spec:
+      containers:
+        - name: app-backend
+          image: wom-scenario/stuck-drain:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: ROLE, value: app-backend }
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 32Mi }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: app-backend-pdb
+  namespace: production
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels: { app: app-backend }

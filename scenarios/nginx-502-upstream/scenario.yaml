@@ -1,0 +1,44 @@
+# WOM scenario v2 (ADR-0005). Authoring format; slice 1 seeds it directly, the CLI arrives in slice 2.
+version: 2
+slug: nginx-502-upstream
+title: "Nginx отдаёт 502"
+summary: "После ночного деплоя главная страница web-01 отвечает 502 Bad Gateway. Алерт горит 9 минут."
+type: "nginx, reverse proxy, upstream"
+difficulty: JUNIOR
+durationMin: 20
+tags: [linux, nginx, web]
+
+contextJson:
+  infra: "Один VM web-01 (Debian 12): nginx как reverse proxy перед приложением app на 127.0.0.1"
+  services: ["nginx", "app"]
+  setup: "Ночью выкатили app v2.3.1. Через полчаса после деплоя сработал алерт HTTP 5xx."
+  time: "Вторник, 03:52"
+eventsJson:
+  - { t: 0, type: alert, title: "HTTP5xxRate > 50%", body: "Prometheus: 100% ответов web-01 — 502 в течение 5 минут." }
+  - { t: 5, type: event, title: "Жалоба поддержки", body: "Клиенты не могут открыть главную страницу." }
+hintsJson:
+  - { level: 1, penalty: 0,  text: "Направление: nginx сам знает, почему отдаёт 502. Спроси его логи." }
+  - { level: 2, penalty: 5,  text: "Инструмент: sudo tail /var/log/nginx/error.log и sudo ss -ltnp — сравни, куда nginx стучится и где слушает app." }
+  - { level: 3, penalty: 15, text: "Почти ответ: в /etc/nginx/sites-available/default апстрим указывает не на тот порт. Поправь и перезагрузи nginx." }
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+environment:
+  kind: container
+  image: wom-scenario/nginx-502-upstream:dev
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  resources: { cpus: 1, memoryMb: 512, pids: 256 }
+  network: { egress: none }
+  services:
+    - { name: nginx, port: 80, kind: http }
+    - { name: app, port: 8081, kind: http }
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: web-01
+  writable: ["/etc", "/var", "/home", "/root", "/opt/app"]

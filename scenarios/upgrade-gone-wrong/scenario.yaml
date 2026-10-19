@@ -1,0 +1,53 @@
+version: 2
+slug: upgrade-gone-wrong
+title: "Обновление пошло не так"
+summary: "02:05, PagerDuty: auto-upgrade нод начал drain stateful-ноды, реплики events и store повисли в Pending, потому что замена пришла в другую зону. Контроллер обновления продолжает дожимать, партиции недореплицированы."
+type: "Kubernetes, auto-upgrade, StatefulSet, zonal PV, cascade"
+difficulty: SENIOR
+durationMin: 25
+tags: [kubernetes, upgrade, statefulset, drain, storage, cascade]
+
+contextJson:
+  infra: "Кластер kind из 4 нод (control-plane + stateful-пул: зона a v1.33.5, зона b v1.33.5, зона d v1.34.0; версия пула читается по метке upgrade/kubelet-version); namespace production: StatefulSet events (3), StatefulSet store (3), app-api (4), PDB minAvailable 2; kube-system: node-upgrade-controller + ConfigMap node-upgrade"
+  services: ["events", "store", "app-api", "node-upgrade-controller"]
+  setup: "Auto-upgrade включён, окно обслуживания среда 02:00–06:00. Идёт обновление 1.33 → 1.34."
+  time: "Среда, 02:05 (PagerDuty разбудил)"
+eventsJson:
+  - { t: 0, type: alert, title: "PagerDuty", body: "[FIRING] EventsUnderReplicatedPartitions 33 % (3m). [FIRING] StoreNodeDown (3m): одна нода store вне кластера." }
+  - { t: 2, type: event, title: "Ноды", body: "Одна нода пула stateful SchedulingDisabled (метка upgrade/kubelet-version: v1.33.5), новая нода v1.34.0 Ready — в другой зоне. Одна реплика events и одна реплика store в Pending." }
+hintsJson:
+  - { level: 1, penalty: 0,  text: "Направление: во время автоматических работ сначала останови автоматику, потом разбирайся. Кто и по какому правилу осушает ноды: kubectl -n kube-system logs deploy/node-upgrade-controller и его ConfigMap." }
+  - { level: 2, penalty: 5,  text: "Инструмент: kubectl describe pod у Pending-реплики (что пишет планировщик в Events), kubectl get pv с nodeAffinity дисков и kubectl get nodes -L topology.kubernetes.io/zone,upgrade/kubelet-version: сопоставь, где лежат диски и какие ноды сейчас schedulable." }
+  - { level: 3, penalty: 15, text: "Почти ответ: диски выселенных реплик в зоне a, новая нода в зоне d, старая нода зоны a cordoned. Поставь autoUpgrade=false в ConfigMap kube-system/node-upgrade, затем kubectl uncordon старой ноды зоны a; реплики вернутся на свои диски. Правильное обновление — утром, с нодой в зоне a." }
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+# the untouched cluster is healthy and paused: the grader passes on it
+test: { baseline: pass }
+
+environment:
+  kind: kubernetes
+  image: wom-tools:dev
+  cluster:
+    nodes: 4
+    workerLabels:
+      - { topology.kubernetes.io/zone: ru-central1-a, node-pool: stateful, upgrade/kubelet-version: v1.33.5 }
+      - { topology.kubernetes.io/zone: ru-central1-b, node-pool: stateful, upgrade/kubelet-version: v1.33.5 }
+      - { topology.kubernetes.io/zone: ru-central1-d, node-pool: stateful, upgrade/kubelet-version: v1.34.0 }
+  manifests: ./k8s
+  images: ["wom-scenario/upgrade-gone-wrong:dev"]
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  startup: { expectedSec: 120, note: "Стенд из четырёх нод: control-plane и три воркера в разных зонах. Поднимается дольше обычного." }
+  resources: { cpus: 1, memoryMb: 384, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: bastion
+  writable: ["/home", "/root", "/etc"]

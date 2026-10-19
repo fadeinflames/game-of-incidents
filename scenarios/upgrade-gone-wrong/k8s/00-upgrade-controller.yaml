@@ -1,0 +1,82 @@
+# managed-Kubernetes auto-upgrade, as the platform team runs it: a controller that drains outdated nodes one by one.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: node-upgrade
+  namespace: kube-system
+data:
+  autoUpgrade: "false"
+  targetVersion: v1.34.0
+  maintenanceWindow: "wed 02:00-06:00"
+  pools: stateful
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: node-upgrade-controller
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: node-upgrade-controller
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["daemonsets", "replicasets", "statefulsets", "deployments"]
+    verbs: ["get", "list"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: node-upgrade-controller
+subjects:
+  - { kind: ServiceAccount, name: node-upgrade-controller, namespace: kube-system }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: node-upgrade-controller
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: node-upgrade-controller
+  namespace: kube-system
+  labels: { app: node-upgrade-controller }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: node-upgrade-controller }
+  template:
+    metadata:
+      labels: { app: node-upgrade-controller }
+    spec:
+      serviceAccountName: node-upgrade-controller
+      tolerations:
+        - { key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule }
+      nodeSelector: { node-role.kubernetes.io/control-plane: "" }
+      containers:
+        - name: controller
+          image: wom-scenario/upgrade-gone-wrong:dev
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "/app/controller.sh"]
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 64Mi }

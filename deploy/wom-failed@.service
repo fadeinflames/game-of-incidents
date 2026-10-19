@@ -1,0 +1,7 @@
+# Template: OnFailure=wom-failed@%n.service in another unit sends a Telegram message when that unit fails.
+[Unit]
+Description=Tell the owner that %i failed
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash %h/wom-platform/deploy/notify.sh "Game of Incidents host: unit %i failed (journalctl --user -u %i)"

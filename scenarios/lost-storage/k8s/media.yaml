@@ -1,0 +1,239 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: storage
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: security
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: media
+---
+# platform storage: S3-compatible object storage (VersityGW). Root credentials = the "cloud access key" of the story.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: storage-root
+  namespace: storage
+type: Opaque
+stringData:
+  access_key: AKIAMEDIA2024PROD01
+  secret_key: k9vX2mQ7pL4wR8sT1uY6zB3nC5dF0gH2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: s3
+  namespace: storage
+spec:
+  selector: { app: s3 }
+  ports:
+    - { port: 9000, targetPort: 7070, name: s3 }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: s3-data
+  namespace: storage
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: { requests: { storage: 1Gi } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: s3
+  namespace: storage
+  labels: { app: s3 }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: s3 }
+  template:
+    metadata:
+      labels: { app: s3 }
+    spec:
+      containers:
+        - name: versitygw
+          image: versity/versitygw:v1.8.0
+          imagePullPolicy: IfNotPresent
+          args: ["posix", "/data"]
+          env:
+            - name: ROOT_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: storage-root, key: access_key } }
+            - name: ROOT_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: storage-root, key: secret_key } }
+          ports:
+            - { containerPort: 7070, name: s3 }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+          readinessProbe:
+            tcpSocket: { port: s3 }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 256Mi }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: s3-data }
+---
+# "the vault": where security keeps the current storage credentials; secret-sync copies them into app namespaces
+apiVersion: v1
+kind: Secret
+metadata:
+  name: s3-credentials
+  namespace: security
+  annotations:
+    security/key-version: "1"
+type: Opaque
+stringData:
+  access_key: AKIAMEDIA2024PROD01
+  secret_key: k9vX2mQ7pL4wR8sT1uY6zB3nC5dF0gH2
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: secret-reader
+  namespace: security
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["s3-credentials"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: secret-sync-reader
+  namespace: security
+subjects:
+  - { kind: ServiceAccount, name: secret-sync, namespace: media }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: secret-reader
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: secret-sync
+  namespace: media
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: secret-sync
+  namespace: media
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: secret-sync
+  namespace: media
+subjects:
+  - { kind: ServiceAccount, name: secret-sync, namespace: media }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: secret-sync
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: media-s3
+  namespace: media
+  annotations:
+    security/key-version: "1"
+type: Opaque
+stringData:
+  access_key: AKIAMEDIA2024PROD01
+  secret_key: k9vX2mQ7pL4wR8sT1uY6zB3nC5dF0gH2
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: secret-sync
+  namespace: media
+  labels: { app: secret-sync }
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    metadata:
+      labels: { app: secret-sync }
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels: { app: secret-sync }
+        spec:
+          serviceAccountName: secret-sync
+          restartPolicy: Never
+          containers:
+            - name: sync
+              image: wom-scenario/lost-storage:dev
+              imagePullPolicy: IfNotPresent
+              command: ["sh", "/app/sync.sh"]
+              resources:
+                requests: { cpu: 10m, memory: 16Mi }
+                limits: { memory: 48Mi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: media-api
+  namespace: media
+  labels: { app: media-api }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: media-api }
+  template:
+    metadata:
+      labels: { app: media-api }
+      annotations:
+        security/key-version: "1"
+    spec:
+      containers:
+        - name: media-api
+          image: wom-scenario/lost-storage:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: S3_ENDPOINT, value: "http://s3.storage.svc:9000" }
+            - { name: S3_BUCKET, value: media }
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom: { secretKeyRef: { name: media-s3, key: access_key } }
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: media-s3, key: secret_key } }
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: media-api
+  namespace: media
+spec:
+  selector: { app: media-api }
+  ports:
+    - { port: 80, targetPort: http }

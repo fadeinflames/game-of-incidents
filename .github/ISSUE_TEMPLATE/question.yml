@@ -1,0 +1,11 @@
+name: Вопрос / Question
+description: Как установить, настроить, использовать / How to install, configure, use
+labels: [question]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Вопрос / Question
+      description: Что уже пробовал и что показал вывод, без секретов / What you tried and the output, no secrets
+    validations:
+      required: true

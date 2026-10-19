@@ -1,0 +1,2 @@
+# nightly logical dump of shop; uploaded to S3 by the same job (see /var/log/pgdump.log)
+15 3 * * * postgres pg_dump shop > /var/lib/postgresql/backups/shop-$(date +\%F).dump && echo "$(date -Is) pgdump: OK" >> /var/log/pgdump.log

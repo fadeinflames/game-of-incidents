@@ -1,0 +1,48 @@
+version: 2
+slug: lost-in-dns
+title: "Потерянные в DNS"
+summary: "После утреннего «hardening CoreDNS» партнёрские имена в corp.internal перестали резолвиться, а имена кластера работают. Все поды Running, CoreDNS Ready, в его логах i/o timeout до корпоративного DNS."
+type: "Kubernetes, CoreDNS, NetworkPolicy, stub-зона"
+difficulty: MIDDLE
+durationMin: 20
+tags: [kubernetes, dns, coredns, networkpolicy]
+
+contextJson:
+  infra: "Кластер kind из одной ноды: CoreDNS со stub-зоной corp.internal → corp-dns (infra, 10.96.0.53); namespace shop: frontend, backend-api, external-api-proxy"
+  services: ["external-api-proxy", "backend-api", "frontend", "coredns", "corp-dns"]
+  setup: "Утром в 08:00 сетевая команда применила новую NetworkPolicy для CoreDNS. Тесты в staging прошли."
+  time: "Четверг, 11:00"
+eventsJson:
+  - { t: 0, type: alert, title: "external-api-proxy: name resolution 80 % errors", body: "«temporary failure in name resolution» для payments-gateway.corp.internal. Все поды Running." }
+  - { t: 2, type: msg, title: "Сетевая команда в Slack", body: "«Мы утром применили hardening для CoreDNS по NET-8811, в staging всё прошло. Не может быть связано.»" }
+hintsJson:
+  - { level: 1, penalty: 0,  text: "Направление: страдают только имена одной зоны. Посмотри, как эта зона обслуживается (Corefile) и что пишет CoreDNS в логах." }
+  - { level: 2, penalty: 5,  text: "Инструмент: kubectl -n kube-system get networkpolicy и describe найденной политики. Проверить, доходит ли трафик до 10.96.0.53 из пода CoreDNS, можно через kubectl -n kube-system debug <под> -it --image=wom-scenario/lost-in-dns:dev --target=coredns -- nslookup payments-gateway.corp.internal. 10.96.0.53 (в самом образе CoreDNS нет shell)." }
+  - { level: 3, penalty: 15, text: "Почти ответ: политика coredns-hardening объявляет Egress в policyTypes, но не описывает ни одного правила (в describe это Allowing egress traffic: <none>). Добавь блок egress с 53/udp+tcp (upstream DNS) и 443+6443/tcp (API-сервер). Удалять политику нельзя." }
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+# the grader wants a CoreDNS NetworkPolicy with an egress rule; the fresh cluster has no policy at all: it must NOT pass
+test: { baseline: fail }
+
+environment:
+  kind: kubernetes
+  image: wom-tools:dev
+  cluster: { nodes: 1 }
+  manifests: ./k8s
+  images: ["wom-scenario/lost-in-dns:dev", "registry.k8s.io/coredns/coredns:v1.14.6"]
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  startup: { expectedSec: 60 }
+  resources: { cpus: 1, memoryMb: 384, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: bastion
+  writable: ["/home", "/root", "/etc"]

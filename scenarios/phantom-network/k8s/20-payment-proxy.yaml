@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: payment-proxy, namespace: default, labels: { app: payment-proxy } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: payment-proxy } }
+  template:
+    metadata: { labels: { app: payment-proxy } }
+    spec:
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: payment-proxy
+          image: wom-scenario/phantom-network:dev
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "/app/payment_proxy.py"]
+          env:
+            - { name: ACQUIRER_A_URL, value: "http://acquirer-a:8443/authorize" }
+            - { name: ACQUIRER_B_URL, value: "http://acquirer-b:8443/authorize" }
+            # no timeout, no fallback: "it has always worked"
+            - { name: ACQUIRER_TIMEOUT, value: "" }
+            - { name: FALLBACK_ACQUIRER, value: "false" }
+          ports: [{ containerPort: 8081, name: http }]
+          readinessProbe: { httpGet: { path: /health, port: http }, periodSeconds: 5 }
+          livenessProbe: { httpGet: { path: /health, port: http }, periodSeconds: 10, failureThreshold: 3 }
+          resources: { requests: { cpu: 20m, memory: 64Mi }, limits: { memory: 256Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: payment-proxy, namespace: default }
+spec:
+  selector: { app: payment-proxy }
+  ports: [{ port: 8081, targetPort: http }]

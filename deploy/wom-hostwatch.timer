@@ -1,0 +1,11 @@
+# cp deploy/wom-hostwatch.* deploy/wom-failed@.service ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now wom-hostwatch.timer
+# needs ~/.wom-hostwatch.env with TG_BOT_TOKEN and TG_CHAT_ID (chmod 600)
+[Unit]
+Description=Game of Incidents host watchdog every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

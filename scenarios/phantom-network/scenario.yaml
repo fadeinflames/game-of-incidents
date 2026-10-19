@@ -1,0 +1,49 @@
+version: 2
+slug: phantom-network
+title: "Фантомная сеть"
+summary: "Оплата картой в приложении отвалилась: edge отдаёт 504, order-service рестартует, база забита транзакциями, а payment-proxy «зелёный». Эквайер А принимает соединение и молчит."
+type: "Kubernetes, каскадный отказ, таймауты, транзакции"
+difficulty: SENIOR
+durationMin: 40
+tags: [kubernetes, cascade, timeouts, postgresql, payments]
+
+contextJson:
+  infra: "Кластер kind: edge-gateway (nginx) → order-service (3 реплики, PostgreSQL) → payment-proxy → эквайер А (основной) / эквайер Б (резерв). Мобильное приложение ретраит неудачные оплаты."
+  services: ["edge-gateway", "order-service", "payment-proxy", "acquirer-a", "acquirer-b", "postgres", "load-generator"]
+  setup: "Ничего не выкатывали. В 10:47 начали расти 5xx на /orders, поддержка завалена жалобами «оплата крутится и падает»."
+  time: "Понедельник, 10:52"
+eventsJson:
+  - { t: 0, type: alert, title: "HTTP5xxRate edge-gateway /orders > 50%", body: "504 Gateway Time-out с 10:47. RPS растёт: приложение ретраит." }
+  - { t: 4, type: event, title: "Поддержка", body: "Клиенты: «оплата картой висит и падает». Оплата через СБП работает." }
+  - { t: 9, type: event, title: "CIO", body: "Сколько теряем в минуту и когда починим? Жду цифры через 5 минут." }
+  - { t: 15, type: event, title: "Аккаунт-менеджер эквайера А", body: "Подтверждаю проблему на нашем балансировщике, сессии не закрываются. Срока восстановления нет." }
+hintsJson:
+  - { level: 1, penalty: 0,  text: "Направление: пройди путь запроса по хопам и найди, на каком именно он ВИСИТ, а не падает. Зелёный сервис без ошибок — тоже улика." }
+  - { level: 2, penalty: 5,  text: "Инструмент: kubectl exec в postgres → pg_stat_activity (state, state_change); kubectl exec в payment-proxy → /metrics (сколько запросов висят в эквайере А); kubectl describe pod order-service → почему рестарты." }
+  - { level: 3, penalty: 15, text: "Почти ответ: эквайер А принимает соединение и молчит, payment-proxy ждёт без таймаута (ACQUIRER_TIMEOUT пуст), order-service держит транзакцию, пока ждёт оплату. Дай payment-proxy таймаут и резервный эквайер (FALLBACK_ACQUIRER=true), потом перезапусти order-service, чтобы освободить зависшие потоки." }
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+# before the break everything works: the grader must pass on the unbroken cluster
+test: { baseline: pass }
+
+environment:
+  kind: kubernetes
+  image: wom-tools:dev
+  cluster: { nodes: 1 }
+  manifests: ./k8s
+  images: ["wom-scenario/phantom-network:dev", "postgres:16-alpine", "nginx:1.27-alpine"]
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 70
+  resources: { cpus: 1, memoryMb: 384, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: bastion
+  writable: ["/home", "/root", "/etc"]

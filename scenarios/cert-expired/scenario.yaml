@@ -1,0 +1,57 @@
+version: 2
+slug: cert-expired
+title: "Сертификат исчез"
+summary: "Ночью истёк TLS-сертификат магазина, ingress отдаёт fake certificate, cert-manager не может перевыпустить: HTTP-01 challenge падает уже два месяца, с тех пор как точку входа сделали «HTTPS only»."
+type: "TLS, cert-manager, ACME HTTP-01, ingress-nginx"
+difficulty: MIDDLE
+durationMin: 22
+tags: [kubernetes, tls, cert-manager, acme, ingress]
+
+contextJson:
+  infra: "Кластер kind из одной ноды: cert-manager v1.17, ingress-nginx, ACME-сервер Pebble 2.10 (namespace acme), namespace production: shop-frontend, Ingress shop с TLS, ClusterIssuer letsencrypt-prod"
+  services: ["shop-frontend", "ingress-nginx", "cert-manager", "pebble"]
+  setup: "ACME HTTP-01 через ingress-nginx. Последнее успешное продление два месяца назад, тогда же закрыт SEC-2210 «HTTPS only»."
+  time: "Понедельник, 09:15"
+eventsJson:
+  - { t: 0, type: msg, title: "CEO", body: "«Сайт не открывается! Ошибка сертификата!» Браузер: сертификат недействителен, выдан Kubernetes Ingress Controller Fake Certificate." }
+  - { t: 2, type: event, title: "kubectl get certificate -A", body: "production/shop-tls READY False." }
+hintsJson:
+  - { level: 1, penalty: 0,  text: "Направление: cert-manager не молчит. describe certificate → order → challenge: там написано, почему проверка не проходит." }
+  - { level: 2, penalty: 5,  text: "Инструмент: kubectl -n production describe challenge (self check … :80 connection refused) и kubectl -n ingress-nginx get svc ingress-nginx-controller (какие порты остались после SEC-2210)." }
+  - { level: 3, penalty: 15, text: "Почти ответ: верни порт 80 в Service ingress-nginx-controller (HTTP-01 ходит только по 80), challenge пройдёт сам через полминуты." }
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+# the first certificate is issued by the bootstrap job a couple of minutes after apply: no baseline check
+test: { baseline: skip }
+
+environment:
+  kind: kubernetes
+  image: wom-tools:dev
+  cluster: { nodes: 1 }
+  manifests: ./k8s
+  images:
+    - wom-scenario/cert-expired:dev
+    - registry.k8s.io/ingress-nginx/controller:v1.12.1
+    - quay.io/jetstack/cert-manager-controller:v1.17.2
+    - quay.io/jetstack/cert-manager-webhook:v1.17.2
+    - quay.io/jetstack/cert-manager-cainjector:v1.17.2
+    # not in any manifest: cert-manager starts it itself as the HTTP-01 solver pod (--acme-http01-solver-image);
+    # kind nodes cannot pull, so without it the very first issuance hangs in ImagePullBackOff
+    - quay.io/jetstack/cert-manager-acmesolver:v1.17.2
+    - ghcr.io/letsencrypt/pebble:2.10.1
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  startup: { expectedSec: 200, note: "Тяжёлый стенд: cert-manager, ingress-nginx и ACME-сервер поднимаются и выпускают первый сертификат. Это занимает около трёх минут." }
+  resources: { cpus: 1, memoryMb: 384, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: bastion
+  writable: ["/home", "/root", "/etc"]

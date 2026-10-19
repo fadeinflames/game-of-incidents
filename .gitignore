@@ -1,0 +1,31 @@
+node_modules/
+.next/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# Next.js build and test tool output
+out/
+playwright-report/
+test-results/
+.cache/
+
+# editors, OS
+.vscode/
+.idea/
+*.swp
+*.tmp
+Thumbs.db
+
+# local assistant settings, backups and host monitoring configs must never be committed
+.claude/settings.local.json
+*.sql.gz
+*.age
+.wom-*.env

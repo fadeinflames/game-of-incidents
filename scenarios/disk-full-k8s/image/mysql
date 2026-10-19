@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""mysql client for the sandbox server: `mysql -e "SQL"`, `mysql --execute="SQL"`, SQL on stdin, or an interactive
+`mysql>` prompt on a terminal; -h/-u/-p are accepted and ignored."""
+import json
+import sys
+import urllib.request
+
+args = sys.argv[1:]
+sql = None
+i = 0
+while i < len(args):
+    a = args[i]
+    if a in ("-e", "--execute"):
+        if i + 1 >= len(args):
+            print(f"mysql: option '{a}' requires an argument", file=sys.stderr)
+            sys.exit(1)
+        sql = args[i + 1]
+        i += 2
+    elif a.startswith("--execute="):
+        sql = a[len("--execute="):]
+        i += 1
+    elif a.startswith("-e"):
+        sql = a[2:]
+        i += 1
+    elif a in ("-h", "-u", "-P", "-D"):
+        i += 2
+    else:
+        i += 1
+
+
+def run(stmt):
+    """one statement -> printed result; False when the server reported an error"""
+    req = urllib.request.Request("http://127.0.0.1:3306/query", data=stmt.encode(), method="POST")
+    try:
+        res = json.load(urllib.request.urlopen(req, timeout=10))
+    except Exception as e:  # noqa: BLE001
+        print(f"ERROR 2003 (HY000): Can't connect to MySQL server on '127.0.0.1:3306' ({e})", file=sys.stderr)
+        sys.exit(1)
+    if "error" in res:
+        print(res["error"], file=sys.stderr)
+        return False
+    if "columns" in res:
+        cols = res["columns"]
+        rows = [[str(c) for c in r] for r in res["rows"]]
+        widths = [max([len(c)] + [len(r[j]) for r in rows]) for j, c in enumerate(cols)]
+        line = "+" + "+".join("-" * (w + 2) for w in widths) + "+"
+        print(line)
+        print("| " + " | ".join(c.ljust(widths[j]) for j, c in enumerate(cols)) + " |")
+        print(line)
+        for r in rows:
+            print("| " + " | ".join(r[j].ljust(widths[j]) for j in range(len(cols))) + " |")
+        print(line)
+        print(f"{len(rows)} row{'s' if len(rows) != 1 else ''} in set")
+    else:
+        print(res.get("message", "Query OK"))
+    return True
+
+
+def interactive():
+    """`kubectl exec -it mysql-0 -- mysql`: a prompt, statements end with `;`, exit/quit/Ctrl-D leave"""
+    print("Welcome to the MySQL monitor. Commands end with ; Type 'exit' to leave.")
+    buf = ""
+    while True:
+        try:
+            line = input("mysql> " if not buf.strip() else "    -> ")
+        except EOFError:
+            print()
+            break
+        if not buf.strip() and line.strip().rstrip(";").strip().lower() in ("exit", "quit", "\\q"):
+            break
+        buf += line + "\n"
+        while ";" in buf:
+            stmt, buf = buf.split(";", 1)
+            if stmt.strip():
+                run(stmt)
+    print("Bye")
+
+
+if sql is None and sys.stdin.isatty():
+    interactive()
+    sys.exit(0)
+if sql is None:
+    sql = sys.stdin.read()
+
+rc = 0
+for stmt in [s for s in sql.split(";") if s.strip()]:
+    if not run(stmt):
+        rc = 1
+sys.exit(rc)

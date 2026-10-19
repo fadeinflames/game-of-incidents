@@ -1,0 +1,21 @@
+# The mobile clients: constant traffic with immediate retries on failure (the storm amplifier).
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: load-generator, namespace: default, labels: { app: load-generator } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: load-generator } }
+  template:
+    metadata: { labels: { app: load-generator } }
+    spec:
+      containers:
+        - name: loadgen
+          image: wom-scenario/phantom-network:dev
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "/app/loadgen.py"]
+          env:
+            - { name: EDGE_URL, value: "http://edge-gateway/orders" }
+            - { name: CONCURRENCY, value: "12" }
+            - { name: RETRIES, value: "3" }
+            - { name: REQUEST_TIMEOUT, value: "12" }
+          resources: { requests: { cpu: 20m, memory: 32Mi }, limits: { memory: 128Mi } }

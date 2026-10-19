@@ -1,0 +1,293 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: security
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shop
+---
+# central observability endpoint (in reality: another cluster / SaaS). TLS, cert issued by the platform CA.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metrics-gateway
+  namespace: monitoring
+  labels: { app: metrics-gateway }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: metrics-gateway }
+  template:
+    metadata:
+      labels: { app: metrics-gateway }
+    spec:
+      containers:
+        - name: gateway
+          image: wom-scenario/blind-monitoring:dev
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "/app/gateway.py"]
+          env:
+            - { name: CA_ACTIVE, value: "1" }
+          ports:
+            - { containerPort: 9443, name: https }
+            - { containerPort: 9090, name: status }
+          readinessProbe:
+            httpGet: { path: /status, port: status }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: metrics-gateway
+  namespace: monitoring
+spec:
+  selector: { app: metrics-gateway }
+  ports:
+    - { name: https, port: 9443, targetPort: https }
+    - { name: status, port: 9090, targetPort: status }
+---
+# publishes the CA bundles (from the image) into the cluster once
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ca-publisher
+  namespace: security
+---
+# publish-ca.sh writes one ConfigMap in security and one Secret in monitoring: two namespaced Roles, nothing cluster-wide
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ca-publisher
+  namespace: security
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ca-publisher
+  namespace: security
+subjects:
+  - { kind: ServiceAccount, name: ca-publisher, namespace: security }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ca-publisher
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ca-publisher
+  namespace: monitoring
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ca-publisher
+  namespace: monitoring
+subjects:
+  - { kind: ServiceAccount, name: ca-publisher, namespace: security }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ca-publisher
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ca-publisher
+  namespace: security
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      serviceAccountName: ca-publisher
+      restartPolicy: OnFailure
+      containers:
+        - name: publish
+          image: wom-scenario/blind-monitoring:dev
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "/app/publish-ca.sh"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: checkout
+  namespace: shop
+  labels: { app: checkout }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: checkout }
+  template:
+    metadata:
+      labels: { app: checkout }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+    spec:
+      containers:
+        - name: checkout
+          image: wom-scenario/blind-monitoring:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 48Mi }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "services", "endpoints", "pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus
+subjects:
+  - { kind: ServiceAccount, name: prometheus, namespace: monitoring }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: monitoring
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+      external_labels:
+        cluster: prod-ru-1
+    rule_files:
+      - /etc/prometheus/rules.yml
+    scrape_configs:
+      - job_name: kubernetes-pods
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+    # alerts are evaluated centrally: this Prometheus only ships samples
+    remote_write:
+      - url: https://metrics-gateway.monitoring.svc:9443/api/v1/write
+        queue_config:
+          max_samples_per_send: 500
+          batch_send_deadline: 5s
+        tls_config:
+          ca_file: /etc/prometheus/tls/ca.crt
+  rules.yml: |
+    groups:
+      - name: checkout
+        rules:
+          - record: job:checkout_requests:rate1m
+            expr: sum(rate(checkout_requests_total[1m]))
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: monitoring
+  labels: { app: prometheus }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: prometheus }
+  template:
+    metadata:
+      labels: { app: prometheus }
+    spec:
+      serviceAccountName: prometheus
+      initContainers:
+        # the trust store is published by the ca-publisher Job; wait for it instead of crash-looping on a missing ca_file
+        - name: wait-for-ca
+          image: prom/prometheus:v2.55.1
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "until [ -s /etc/prometheus/tls/ca.crt ]; do echo waiting for remote-write-ca; sleep 3; done"]
+          volumeMounts:
+            - { name: tls, mountPath: /etc/prometheus/tls, readOnly: true }
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.55.1
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time=2h
+            - --web.enable-lifecycle
+          ports:
+            - { containerPort: 9090, name: http }
+          volumeMounts:
+            - { name: config, mountPath: /etc/prometheus }
+            - { name: tls, mountPath: /etc/prometheus/tls, readOnly: true }
+            - { name: data, mountPath: /prometheus }
+          readinessProbe:
+            httpGet: { path: /-/ready, port: http }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 384Mi }
+      volumes:
+        - name: config
+          configMap: { name: prometheus-config }
+        - name: tls
+          secret: { secretName: remote-write-ca, optional: true }
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  selector: { app: prometheus }
+  ports:
+    - { port: 9090, targetPort: http }

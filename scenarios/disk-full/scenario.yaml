@@ -1,0 +1,45 @@
+version: 2
+slug: disk-full
+title: "Полный диск"
+summary: "PostgreSQL на db-01 не поднимается после ночного обслуживания: раздел с данными заполнен на 100 %. API заказов отвечает 500."
+type: "Linux, disk space, PostgreSQL, retention"
+difficulty: JUNIOR
+durationMin: 20
+tags: [linux, disk, postgresql]
+
+contextJson:
+  infra: "Один VM db-01 (Debian 12): PostgreSQL 15 с данными на отдельном разделе /var/lib/postgresql; рядом маленькое API заказов (app) на 127.0.0.1:8080"
+  services: ["postgresql", "app"]
+  setup: "Ночью в 03:15 отработал плановый pg_dump, в 03:40 — рестарт PostgreSQL для обновления конфигурации. После рестарта база не поднялась."
+  time: "Среда, 07:05"
+eventsJson:
+  - { t: 0, type: alert, title: "PostgresDown on db-01", body: "pg_isready: no response. API заказов отдаёт 500 с 03:40." }
+  - { t: 6, type: event, title: "Поддержка", body: "Клиенты не могут оформить заказ. Сколько ещё?" }
+hintsJson:
+  - { level: 1, penalty: 0,  text: "Направление: база сама пишет, почему не стартует. Лог PostgreSQL и df -h покажут одно и то же." }
+  - { level: 2, penalty: 5,  text: "Инструмент: du -sh /var/lib/postgresql/* найдёт, что съело место; /var/log/pgdump.log расскажет, нужны ли эти файлы локально." }
+  - { level: 3, penalty: 15, text: "Почти ответ: старые дампы в /var/lib/postgresql/backups уже загружены в S3 — их можно удалить, потом service postgresql start и service app start." }
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+environment:
+  kind: container
+  image: wom-scenario/disk-full:dev
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  resources: { cpus: 1, memoryMb: 768, pids: 512 }
+  network: { egress: none }
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: db-01
+  writable: ["/etc", "/var", "/home", "/root", "/opt/app"]
+  # the "data partition": a tmpfs with a hard size limit — df shows a real 100 % (ADR-0005)
+  tmpfs: { "/var/lib/postgresql": "size=160m" }
+
+# the grader also demands the 50 night orders that break.sh writes, so an unbroken stand legitimately fails it
+test: { baseline: fail }

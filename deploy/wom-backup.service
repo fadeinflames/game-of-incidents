@@ -1,0 +1,8 @@
+[Unit]
+Description=Game of Incidents database backup
+OnFailure=wom-failed@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/wom-platform
+ExecStart=%h/wom-platform/deploy/backup.sh

@@ -1,0 +1,48 @@
+version: 2
+slug: log-flood
+title: "Потоп из логов"
+summary: "После включения дебаг-режима recommendation-api пишет по 200 KB лога на запрос. Том логов заполняется за минуту, kubelet выселяет поды, Deployment создаёт новые, шиппер логов не догоняет, клиенты получают ошибки."
+type: "Kubernetes, ephemeral storage, eviction, logging"
+difficulty: MIDDLE
+durationMin: 20
+tags: [kubernetes, logs, eviction, storage, sidecar]
+
+contextJson:
+  infra: "Кластер kind из одной ноды: Deployment recommendation-api (3 реплики, сайдкар log-shipper, том логов 64 Mi), ConfigMap recommendation-config, генератор клиентского трафика 20 rps"
+  services: ["recommendation-api", "log-shipper"]
+  setup: "ML-команда включила DEBUG_PAYLOAD=on, чтобы разобраться с плохими рекомендациями."
+  time: "Среда, 18:20"
+eventsJson:
+  - { t: 0, type: alert, title: "PodEvicted: recommendation-api", body: "Поды recommendation-api выселяются один за другим: Usage of EmptyDir volume exceeds the limit." }
+  - { t: 2, type: msg, title: "ML-команда в Slack", body: "«Мы после обеда включили дебаг-режим, это же только логи?»" }
+hintsJson:
+  - { level: 1, penalty: 0,  text: "Направление: kubectl describe у выселенного пода скажет, какой том переполнился. Дальше смотри, кто и с какой скоростью в него пишет." }
+  - { level: 2, penalty: 5,  text: "Инструмент: kubectl get configmap recommendation-config -o yaml и kubectl rollout history deploy/recommendation-api. Метрики шиппера: wget -qO- http://127.0.0.1:9102/metrics внутри контейнера log-shipper." }
+  - { level: 3, penalty: 15, text: "Почти ответ: DEBUG_PAYLOAD=off в ConfigMap, rollout restart deploy/recommendation-api, удалить Evicted-поды (--field-selector=status.phase=Failed), подождать минуту." }
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+# the grader reads a 60 s traffic window and the shipper backlog, both empty right after apply: no baseline
+test: { baseline: skip }
+
+environment:
+  kind: kubernetes
+  image: wom-tools:dev
+  cluster: { nodes: 1 }
+  manifests: ./k8s
+  images: ["wom-scenario/log-flood:dev"]
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  startup: { expectedSec: 60 }
+  resources: { cpus: 1, memoryMb: 384, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: bastion
+  writable: ["/home", "/root", "/etc"]

@@ -1,0 +1,166 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shop-frontend
+  namespace: production
+  labels: { app: shop-frontend }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: shop-frontend }
+  template:
+    metadata:
+      labels: { app: shop-frontend }
+    spec:
+      containers:
+        - name: web
+          image: wom-scenario/cert-expired:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 48Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shop-frontend
+  namespace: production
+spec:
+  selector: { app: shop-frontend }
+  ports:
+    - { port: 80, targetPort: http }
+---
+# the public name of the shop resolves to the ingress controller (DNS is in-cluster here, the story says "our domain")
+apiVersion: v1
+kind: Service
+metadata:
+  name: shop
+  namespace: production
+spec:
+  type: ExternalName
+  externalName: ingress-nginx-controller.ingress-nginx.svc.cluster.local
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: shop
+  namespace: production
+  annotations:
+    owner: shop-team
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [shop.production.svc.cluster.local]
+      secretName: shop-tls
+  rules:
+    - host: shop.production.svc.cluster.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: shop-frontend, port: { number: 80 } }
+---
+# issuer + certificate are created by the bootstrap job once cert-manager's webhook is up
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: acme-bootstrap
+  namespace: production
+data:
+  issuer.yaml: |
+    apiVersion: cert-manager.io/v1
+    kind: ClusterIssuer
+    metadata:
+      name: letsencrypt-prod
+    spec:
+      acme:
+        server: https://pebble.acme.svc:14000/dir
+        email: ops@shop.example
+        skipTLSVerify: true
+        privateKeySecretRef:
+          name: letsencrypt-prod-account
+        solvers:
+          - http01:
+              ingress:
+                ingressClassName: nginx
+  certificate.yaml: |
+    apiVersion: cert-manager.io/v1
+    kind: Certificate
+    metadata:
+      name: shop-tls
+      namespace: production
+    spec:
+      secretName: shop-tls
+      dnsNames:
+        - shop.production.svc.cluster.local
+      issuerRef:
+        kind: ClusterIssuer
+        name: letsencrypt-prod
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: acme-bootstrap
+  namespace: production
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: acme-bootstrap
+rules:
+  - apiGroups: ["cert-manager.io"]
+    resources: ["clusterissuers", "certificates"]
+    verbs: ["get", "list", "create", "update", "patch"]
+  - apiGroups: ["acme.cert-manager.io"]
+    resources: ["challenges", "orders"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: acme-bootstrap
+subjects:
+  - { kind: ServiceAccount, name: acme-bootstrap, namespace: production }
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: acme-bootstrap
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: acme-bootstrap
+  namespace: production
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      serviceAccountName: acme-bootstrap
+      restartPolicy: OnFailure
+      containers:
+        - name: bootstrap
+          image: wom-scenario/cert-expired:dev
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "/app/bootstrap.sh"]
+          volumeMounts:
+            - { name: bootstrap, mountPath: /bootstrap }
+      volumes:
+        - name: bootstrap
+          configMap: { name: acme-bootstrap }

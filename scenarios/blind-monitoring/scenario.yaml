@@ -1,0 +1,48 @@
+version: 2
+slug: blind-monitoring
+title: "Слепой мониторинг"
+summary: "После ночной ротации корневого CA Prometheus кластера перестал отправлять семплы в центральный шлюз: TLS-рукопожатие не проходит. Дашборды пустые, алерты молчат, и никто не знает, что кластер ослеп."
+type: "Observability, Prometheus remote_write, TLS, ротация CA"
+difficulty: SENIOR
+durationMin: 22
+tags: [kubernetes, prometheus, tls, monitoring, secrets]
+
+contextJson:
+  infra: "Кластер kind из одной ноды: Prometheus v2.55 (namespace monitoring) с remote_write в TLS-шлюз metrics-gateway, бандл CA в security/observability-ca, приложение shop/checkout"
+  services: ["prometheus", "metrics-gateway", "checkout"]
+  setup: "В 03:00 security ротировала корневой CA платформы. Шлюз перевыпустил сертификат."
+  time: "Понедельник, 09:20"
+eventsJson:
+  - { t: 0, type: alert, title: "Центр: NoDataFromCluster prod-ru-1 (6h)", body: "Ни одного семпла с 03:10. Дашборды пустые." }
+  - { t: 2, type: msg, title: "Security в Slack", body: "«Ночью ротировали корневой CA по плану, новый бандл опубликован в security/observability-ca.»" }
+hintsJson:
+  - { level: 1, penalty: 0,  text: "Направление: Prometheus Ready не значит «данные доходят». Его логи про remote_write и статус шлюза (/status) скажут, что именно рвётся." }
+  - { level: 2, penalty: 5,  text: "Инструмент: kubectl -n monitoring logs deploy/prometheus | grep remote (x509: unknown authority). Сравни CA в Secret monitoring/remote-write-ca с текущим в ConfigMap security/observability-ca." }
+  - { level: 3, penalty: 15, text: "Почти ответ: положи ca-next.crt из security/observability-ca в Secret remote-write-ca (ключ ca.crt) и перезапусти Prometheus (rollout restart): так новый CA подхватится сразу, а не после обновления тома kubelet'ом. Не выключай проверку TLS." }
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+# the untouched cluster ships samples with a verified CA: the grader passes on it (after the first remote_write batch)
+test: { baseline: skip }
+
+environment:
+  kind: kubernetes
+  image: wom-tools:dev
+  cluster: { nodes: 1 }
+  manifests: ./k8s
+  images: ["wom-scenario/blind-monitoring:dev", "prom/prometheus:v2.55.1"]
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  startup: { expectedSec: 100, note: "В кластер загружается Prometheus." }
+  resources: { cpus: 1, memoryMb: 384, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: bastion
+  writable: ["/home", "/root", "/etc"]

@@ -1,0 +1,25 @@
+{
+  "name": "@wom/runtime",
+  "version": "0.0.1",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "description": "RuntimeProvider (ADR-0001): sandbox lifecycle behind one interface. Docker implementation + in-memory fake.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "dockerode": "^4.0.2"
+  },
+  "devDependencies": {
+    "@types/dockerode": "^3.3.31",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}

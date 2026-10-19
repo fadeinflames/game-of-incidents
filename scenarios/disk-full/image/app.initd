@@ -1,0 +1,39 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          app
+# Required-Start:    $local_fs $network postgresql
+# Required-Stop:     $local_fs
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: orders API
+### END INIT INFO
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+NAME=app
+PIDFILE=/run/app.pid
+DAEMON=/usr/bin/python3
+DAEMON_ARGS="/opt/app/app.py"
+USER=app
+LOG=/var/log/app/app.log
+ENVFILE=/etc/app/app.env
+
+. /lib/lsb/init-functions
+
+start() {
+  log_daemon_msg "Starting $NAME"
+  set -a; [ -r "$ENVFILE" ] && . "$ENVFILE"; set +a
+  start-stop-daemon --start --quiet --background --make-pidfile --pidfile "$PIDFILE" \
+    --chuid "$USER" --no-close --exec "$DAEMON" -- $DAEMON_ARGS >>"$LOG" 2>&1
+  log_end_msg $?
+}
+stop() {
+  log_daemon_msg "Stopping $NAME"
+  start-stop-daemon --stop --quiet --retry=TERM/5/KILL/2 --pidfile "$PIDFILE"
+  rc=$?; rm -f "$PIDFILE"; log_end_msg $rc
+}
+case "$1" in
+  start) start ;;
+  stop) stop ;;
+  restart) stop; sleep 1; start ;;
+  status) status_of_proc -p "$PIDFILE" "$DAEMON" "$NAME" ;;
+  *) echo "Usage: service app {start|stop|restart|status}"; exit 2 ;;
+esac

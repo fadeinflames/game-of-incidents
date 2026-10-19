@@ -1,0 +1,12 @@
+[Unit]
+Description=Game of Incidents host watchdog (disk, load, certificate, backups, containers)
+OnFailure=wom-failed@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/wom-platform
+ExecStart=/usr/bin/bash %h/wom-platform/deploy/hostwatch.sh
+# exit 2 = "a problem is present and was reported", not a failure of the watchdog itself
+SuccessExitStatus=2
+# a docker daemon that hangs must not stall the watchdog for ever: the unit fails and wom-failed@ tells the owner
+TimeoutStartSec=3min

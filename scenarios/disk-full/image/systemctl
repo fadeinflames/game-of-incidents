@@ -1,0 +1,23 @@
+#!/bin/sh
+# systemctl shim for sandboxes (ADR-0001: containers have no systemd; services are SysV scripts under /etc/init.d).
+# Maps the everyday verbs to `service` so the host feels like a normal Debian box.
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; export PATH
+cmd=${1:-}; unit=${2:-}
+unit=${unit%.service}
+# status needs root to read pid files; borrow sudo when the on-call user has it
+svc_status() { if [ "$(id -u)" != 0 ] && sudo -n true 2>/dev/null; then sudo -n service "$1" status; else service "$1" status; fi; }
+case "$cmd" in
+  start|stop|restart|reload|force-reload|status)
+    [ -n "$unit" ] || { echo "systemctl: missing unit name" >&2; exit 1; }
+    [ -x "/etc/init.d/$unit" ] || { echo "Failed to $cmd $unit.service: Unit $unit.service not found." >&2; exit 5; }
+    exec service "$unit" "$cmd" ;;
+  is-active)
+    svc_status "$unit" >/dev/null 2>&1 && { echo active; exit 0; } || { echo inactive; exit 3; } ;;
+  enable|disable|daemon-reload|daemon-reexec|mask|unmask)
+    echo "systemctl: '$cmd' is accepted but has no effect on this host (SysV init)"; exit 0 ;;
+  list-units|list-unit-files|"")
+    printf '%-24s %-8s %-8s\n' UNIT LOAD ACTIVE
+    for s in /etc/init.d/*; do n=$(basename "$s"); case "$n" in README|skeleton|rc*|hwclock*|procps|sudo|cron.*) continue;; esac; st=inactive; svc_status "$n" >/dev/null 2>&1 && st=active; printf '%-24s %-8s %-8s\n' "$n.service" loaded "$st"; done; exit 0 ;;
+  *)
+    echo "systemctl: '$cmd' is not supported on this host. Use: systemctl {start|stop|restart|reload|status} <service>" >&2; exit 1 ;;
+esac

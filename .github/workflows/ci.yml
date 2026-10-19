@@ -1,0 +1,37 @@
+# Checks pull requests and main only. It does not deploy and uses no secrets: delivery stays in scripts/deploy.sh.
+# The full gate (a throwaway PostgreSQL, integration tests) is `make verify`; this job runs the part that needs no database.
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm -w @wom/db run generate
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Unit tests (no database)
+        run: |
+          npm -w @wom/runtime test
+          npm -w @wom/scenario test
+          npm -w @wom/web test
+          npm -w @wom/orchestrator run test:unit
+      - name: Scenario lint
+        run: npx wom scenario lint scenarios/*/
+      - name: Shell syntax and script tests
+        run: |
+          for f in $(git ls-files '*.sh'); do bash -n "$f"; done
+          bash scripts/test/run.sh

@@ -1,0 +1,137 @@
+# Dev stack. Run against the sandbox Docker daemon (rootless on the dev host):
+#   DOCKER_HOST=unix:///run/user/1000/docker.sock docker compose up -d
+# db (5433) and orchestrator (3080) are published on 127.0.0.1 only; web (3000) stays on the LAN (slice 1 decision: LAN demo, no TLS yet).
+# To let a browser on another machine reach the terminal WebSocket, set ORCHESTRATOR_BIND=0.0.0.0 and ORCHESTRATOR_PUBLIC_URL in .env.
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: wom_db
+    environment:
+      POSTGRES_DB: wom
+      POSTGRES_USER: wom
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wom}
+    volumes:
+      # PGDATA_MOUNT=/srv/pgdata (an absolute path = bind mount) takes the database off the sandbox data-root, where a
+      # sandbox without a disk quota can fill the filesystem under PostgreSQL. Move the data first: runbook.
+      - ${PGDATA_MOUNT:-wom_db_data}:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${DB_HOST_PORT:-5433}:5432"   # host access for migrations/seed/dev only
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wom -d wom"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [internal]
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: services/orchestrator/Dockerfile
+    # ONE instance: the orchestrator owns the sandbox daemon, the port allocation and the in-memory session state (architect-5).
+    # container_name already makes `docker compose up --scale orchestrator=2` fail; a second process started by hand (npm run
+    # dev next to the container) is for the orchestrator's own start-up guard to refuse.
+    container_name: wom_orchestrator
+    depends_on:
+      db:
+        condition: service_healthy
+      # fail closed (R-7): no orchestrator until the guard has confirmed the egress rules
+      egress-guard:
+        condition: service_healthy
+    environment:
+      # explicit pool: Prisma defaults to num_cpus*2+1 connections per process and waits 10 s for a free one; two processes
+      # share the 100 connections of PostgreSQL, so each gets a fixed share (DB_POOL_LIMIT) and a visible wait limit
+      DATABASE_URL: postgresql://wom:${POSTGRES_PASSWORD:-wom}@db:5432/wom?schema=public&connection_limit=${DB_POOL_LIMIT:-10}&pool_timeout=${DB_POOL_TIMEOUT_SEC:-20}&connect_timeout=10
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:?set INTERNAL_TOKEN in .env}
+      PORT: "8080"
+      DOCKER_SOCKET: /var/run/docker.sock
+      MAX_SESSIONS_PER_USER: "1"
+      MAX_SESSIONS_GLOBAL: "10"
+      MAX_K8S_SESSIONS: "3"
+      MAX_K8S_PROVISIONING: "1"   # a small dev host creates one cluster at a time comfortably
+      # seed runs inside this container (NODE_ENV=production): empty = no demo account (the administrator comes from ADMIN_*);
+      # a dev stack that wants the demo account sets its own password in .env, there is no built-in default
+      SEED_DEMO_PASSWORD: ${SEED_DEMO_PASSWORD:-}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      DOCKER_HOST: unix:///var/run/docker.sock   # for kind (docker CLI) inside the container
+      KIND_BIN: /usr/local/bin/kind
+      TOOLS_IMAGE: wom-tools:dev
+      # written by egress-guard; missing or stale => Kubernetes sessions are refused
+      EGRESS_HEARTBEAT_FILE: /run/wom-egress/heartbeat
+    volumes:
+      # the ONLY process with the sandbox daemon socket (ADR-0003). Sandboxes never get it.
+      - ${DOCKER_SOCKET_PATH:-/run/user/1000/docker.sock}:/var/run/docker.sock
+      - wom_egress_state:/run/wom-egress:ro
+    ports:
+      - "${ORCHESTRATOR_BIND:-127.0.0.1}:3080:8080"
+    networks: [internal]
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        WOM_DOMAIN: ${WOM_DOMAIN:-}
+    container_name: wom_web
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # architect-10: web connects as a role of its own when WEB_DB_USER/WEB_DB_PASSWORD are set in .env (deploy/db-roles.sh
+      # creates it: no superuser, writes only the tables web writes, SELECT only on TrainingSession and SessionEvent).
+      # Unset = the owner role "wom" as before. The orchestrator, the migrations and the seed keep "wom", the bootstrap
+      # superuser of the database: demoting it needs a separate migration role first, so it is not done here.
+      DATABASE_URL: postgresql://${WEB_DB_USER:-wom}:${WEB_DB_PASSWORD:-${POSTGRES_PASSWORD:-wom}}@db:5432/wom?schema=public&connection_limit=${DB_POOL_LIMIT:-10}&pool_timeout=${DB_POOL_TIMEOUT_SEC:-20}&connect_timeout=10
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:?set INTERNAL_TOKEN in .env}
+      ORCHESTRATOR_URL: http://orchestrator:8080
+      ORCHESTRATOR_PUBLIC_URL: ${ORCHESTRATOR_PUBLIC_URL:-http://127.0.0.1:3080}
+      REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-true}
+      # feedback link shown in the footer and on the session page: a Telegram chat or mailto: address; empty = no links
+      CONTACT_URL: ${CONTACT_URL:-}
+      # slice 1: LAN demo over plain http (no TLS yet). Set to "true" behind Caddy in slice 5.
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    ports:
+      - "3000:3000"
+    # infra-5: the image runs as the unprivileged "node" user; nothing more is needed. The root filesystem is read-only, the
+    # process writes only to /tmp (submission and review unpacking) and Next's runtime cache.
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+      - /app/apps/web/.next/cache:size=64m,uid=1000,gid=1000,mode=0700
+    healthcheck:
+      # liveness only: any HTTP answer counts, a 503 of /api/health (database or orchestrator down) must not mark web unhealthy
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(() => process.exit(0), () => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 20s
+    networks: [internal]
+
+  # threat model R-7: iptables in the sandbox daemon's network namespace; rootless docker => host netns of the daemon
+  egress-guard:
+    build:
+      context: images/egress-guard
+    container_name: wom_egress_guard
+    network_mode: host
+    privileged: true
+    restart: unless-stopped
+    volumes:
+      # rootless docker with --detach-netns (Debian 13): the bridges live in this namespace file; unset => /dev/null
+      - ${DOCKER_NETNS_FILE:-/dev/null}:/host-netns:ro
+      - wom_egress_state:/run/wom-egress
+    healthcheck:
+      # guard.sh rewrites the heartbeat every 30 s, and only after it has found or installed every rule
+      test: ["CMD-SHELL", "t=$$(cat /run/wom-egress/heartbeat 2>/dev/null) && [ $$(( $$(date +%s) - t )) -lt 90 ]"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  wom_db_data:
+  wom_egress_state:
+
+networks:
+  internal:

@@ -1,0 +1,31 @@
+name: Идея сценария / Scenario idea
+description: Предложить новый инцидент / Propose a new incident
+labels: [scenario]
+body:
+  - type: textarea
+    id: incident
+    attributes:
+      label: Что ломается и как это видно / What breaks and how it shows
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Стенд / Stand
+      options: [Linux, Kubernetes]
+    validations:
+      required: true
+  - type: dropdown
+    id: level
+    attributes:
+      label: Уровень / Level
+      options: [junior, middle, senior]
+    validations:
+      required: true
+  - type: checkboxes
+    id: license
+    attributes:
+      label: Лицензия / Licence
+      options:
+        - label: Согласен(на) на публикацию текста и скриптов под CC BY 4.0 / I agree to publish under CC BY 4.0
+          required: true

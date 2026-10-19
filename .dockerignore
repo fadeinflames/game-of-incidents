@@ -1,0 +1,45 @@
+# Build context of the root Dockerfiles (services/orchestrator, apps/web). Without this file the context carried
+# node_modules, .next and .git (about 1 GB), and .env with the secrets.
+
+# dependencies and build output (the images run their own `npm ci` / `next build`)
+**/node_modules
+**/.next
+**/dist
+**/coverage
+**/*.tsbuildinfo
+
+# VCS and editors
+.git
+.gitignore
+.gitattributes
+.vscode
+.idea
+.claude
+
+# secrets: compose reads .env itself, it must never be baked into an image
+.env
+.env.*
+!.env.example
+
+# documentation is not used by any image (audits included: they describe open weaknesses of the live host)
+docs
+README.md
+NOTICE
+
+# tests and test tooling (the images do not run them)
+apps/*/test
+apps/*/e2e
+services/*/test
+packages/*/test
+scripts/test
+**/*.test.ts
+**/*.spec.ts
+**/playwright-report
+**/test-results
+
+# temporary files
+*.log
+*.tmp
+*.swp
+.DS_Store
+Thumbs.db

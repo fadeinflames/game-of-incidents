@@ -1,0 +1,154 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-secret
+  namespace: default
+type: Opaque
+stringData:
+  password: billing
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-init
+  namespace: default
+data:
+  # schema v1 + seed, applied by the postgres image on first start
+  01-schema.sql: |
+    CREATE TABLE invoices (
+      id serial PRIMARY KEY,
+      customer text NOT NULL,
+      total_cents bigint NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
+    INSERT INTO invoices (customer, total_cents)
+      SELECT 'customer-' || i, i * 1000 FROM generate_series(1, 20) AS i;
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: default
+spec:
+  clusterIP: None
+  selector: { app: postgres }
+  ports:
+    - { port: 5432, targetPort: 5432 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: default
+  labels: { app: postgres }
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels: { app: postgres }
+  template:
+    metadata:
+      labels: { app: postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: POSTGRES_USER, value: billing }
+            - { name: POSTGRES_DB, value: billing }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: postgres-secret, key: password } }
+          ports:
+            - { containerPort: 5432, name: pg }
+          volumeMounts:
+            - { name: init, mountPath: /docker-entrypoint-initdb.d }
+            - { name: data, mountPath: /var/lib/postgresql/data }
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "billing", "-d", "billing"] }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { memory: 256Mi }
+      volumes:
+        - name: init
+          configMap: { name: db-init }
+        - name: data
+          emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: billing-api
+  namespace: default
+  labels: { app: billing-api }
+  annotations:
+    kubernetes.io/change-cause: "release 1.9.4"
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels: { app: billing-api }
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  template:
+    metadata:
+      labels: { app: billing-api }
+    spec:
+      containers:
+        - name: billing-api
+          image: wom-scenario/schema-ahead:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: APP_VERSION, value: "1.9.4" }
+            - { name: PGHOST, value: postgres }
+            - { name: PGUSER, value: billing }
+            - { name: PGDATABASE, value: billing }
+            - name: PGPASSWORD
+              valueFrom: { secretKeyRef: { name: postgres-secret, key: password } }
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 30m, memory: 48Mi }
+            limits: { memory: 96Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: billing-api
+  namespace: default
+spec:
+  selector: { app: billing-api }
+  ports:
+    - { port: 80, targetPort: http }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traffic
+  namespace: default
+  labels: { app: traffic }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: traffic }
+  template:
+    metadata:
+      labels: { app: traffic }
+    spec:
+      containers:
+        - name: loadgen
+          image: wom-scenario/schema-ahead:dev
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "/app/loadgen.py"]
+          env:
+            - { name: TARGET, value: "http://billing-api" }
+          ports:
+            - { containerPort: 9090, name: stats }
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 64Mi }
