@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@wom/db": "*",
-    "ws": "^8.18.0",
+    "ws": "^8.22.1",
     "@wom/runtime": "*",
     "fflate": "^0.8.2",
     "@wom/scenario": "*"
