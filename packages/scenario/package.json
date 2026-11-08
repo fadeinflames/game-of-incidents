@@ -20,7 +20,7 @@
   "dependencies": {
     "@wom/runtime": "*",
     "yaml": "^2.6.0",
-    "zod": "^4.3.6",
+    "zod": "^4.6.7",
     "fflate": "^0.8.2"
   },
   "devDependencies": {
