@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { prisma } from "@wom/db";
-import { parseScenarioContext, TUTORIAL_SUFFIX } from "@wom/scenario";
+import { parseScenarioContext, parseSources, sourceAttributions, TUTORIAL_SUFFIX } from "@wom/scenario";
 import { requireUser } from "@/lib/auth";
 import { ACTIVE_SESSION_STATUSES } from "@/lib/admin";
 import { DIFFICULTY, FINAL_SESSION_STATUSES } from "@/lib/labels";
@@ -32,7 +32,7 @@ export default async function ScenarioPage({ params }: { params: Promise<{ slug:
   const { slug } = await params;
   const s = await prisma.scenario.findUnique({
     where: { slug },
-    select: { id: true, slug: true, title: true, summary: true, type: true, difficulty: true, durationMin: true, tags: true, isPublished: true, contextJson: true, hintsJson: true, environmentJson: true },
+    select: { id: true, slug: true, title: true, summary: true, type: true, difficulty: true, durationMin: true, tags: true, isPublished: true, contextJson: true, hintsJson: true, environmentJson: true, sourcesJson: true },
   });
   const env = s ? parseEnvironment(s.environmentJson) : null;
   if (!s || !s.isPublished || !env) notFound();
@@ -43,6 +43,9 @@ export default async function ScenarioPage({ params }: { params: Promise<{ slug:
   const startupSec = env.startup?.expectedSec ?? (isK8s ? 60 : 5);
   const ttlMin = env.ttlMin ?? 45;
   const isTutorial = s.tags.includes("tutorial");
+  // whose incident it is based on; the link to the write-up belongs to the finished session
+  const fromPostmortem = parseSources(s.sourcesJson).length > 0;
+  const basedOn = sourceAttributions(s.sourcesJson);
 
   const twinSlug = s.slug.endsWith(TUTORIAL_SUFFIX) ? s.slug.slice(0, -TUTORIAL_SUFFIX.length) : s.slug + TUTORIAL_SUFFIX;
   const [twin, active, capacity, solvedBest, triedCount] = await Promise.all([
@@ -132,6 +135,23 @@ export default async function ScenarioPage({ params }: { params: Promise<{ slug:
               <p className="mt-3 text-xs" style={{ color: "var(--muted)" }}>
                 {env.startup.note}
               </p>
+            )}
+            {fromPostmortem && (
+              <div className="mt-3 border-t border-[var(--border)] pt-3 text-sm" data-testid="based-on">
+                <p className="text-xs font-bold uppercase tracking-wider" style={{ color: "var(--muted)" }}>
+                  По мотивам реального инцидента
+                </p>
+                {basedOn.length > 0 && (
+                  <ul className="mt-1.5 space-y-0.5">
+                    {basedOn.map((b) => (
+                      <li key={b}>{b}</li>
+                    ))}
+                  </ul>
+                )}
+                <p className="mt-1.5 text-xs" style={{ color: "var(--muted)" }}>
+                  Ссылка на оригинальный разбор откроется после конца сессии: в нём названа причина.
+                </p>
+              </div>
             )}
           </div>
 

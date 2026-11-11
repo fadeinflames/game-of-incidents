@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import { ALLOWED_BASE_IMAGES } from "../src/lint";
+import { sourceAttribution } from "../src/schema";
 import { findPython, pythonFiles, pythonSyntaxIssues } from "../src/pycheck";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
@@ -86,6 +87,17 @@ describe.skipIf(!python)("blind-monitoring gateway: a silent connection", () => 
   it("the stalled client of an accepted request has a read timeout as well", () => {
     const src = readFileSync(path.join(root, "scenarios", "blind-monitoring", "image", "gateway.py"), "utf8");
     expect(src).toMatch(/class Write\(BaseHTTPRequestHandler\):\s+timeout = \d+/);
+  });
+});
+
+describe("sources of the repository scenarios", () => {
+  it("every source title starts with whose incident it was and when", () => {
+    const bad: string[] = [];
+    for (const s of scenarios) {
+      const yaml = readFileSync(path.join(root, "scenarios", s, "scenario.yaml"), "utf8");
+      for (const m of yaml.matchAll(/^\s+- title:\s*"(.+)"\s*$/gm)) if (!sourceAttribution(m[1])) bad.push(`${s}: ${m[1]}`);
+    }
+    expect(bad).toEqual([]);
   });
 });
 

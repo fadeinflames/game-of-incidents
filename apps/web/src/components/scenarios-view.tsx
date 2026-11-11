@@ -19,6 +19,8 @@ export type ScenarioCard = {
   kind: "container" | "kubernetes";
   /** "postmortem": made after a public write-up of a real incident (the scenario declares `sources`) */
   origin: "authored" | "postmortem";
+  /** whose incident and when ("Joyent, 27.07.2015"), for a postmortem scenario; never the link or the title of the write-up */
+  basedOn: string[];
   /** declared usual startup time; heavy stacks (extra CNI, ingress, Prometheus…) say so on the card */
   startupSec: number | null;
   /** this person's own result; null when never finished an attempt */
@@ -36,7 +38,7 @@ type Origin = "all" | ScenarioCard["origin"];
 const ORIGINS: { key: Origin; label: string; note: string }[] = [
   { key: "all", label: "Все", note: "" },
   { key: "authored", label: "Авторские", note: "Придуманы авторами платформы и сообщества." },
-  { key: "postmortem", label: "Постмортемы", note: "Сделаны по мотивам публичных разборов реальных инцидентов. Ссылка на оригинал откроется под разбором после конца сессии." },
+  { key: "postmortem", label: "Постмортемы", note: "Сделаны по мотивам публичных разборов реальных инцидентов: на карточке написано, чей это инцидент. Ссылка на сам разбор откроется после конца сессии, чтобы не подсказывать причину." },
 ];
 
 const LEVELS = ["JUNIOR", "MIDDLE", "SENIOR"] as const;
@@ -237,6 +239,12 @@ function ScenarioTile({ s }: { s: ScenarioCard }) {
       <p className="text-sm" style={{ color: "var(--muted)" }}>
         {s.summary}
       </p>
+      {s.origin === "postmortem" && (
+        <p className="text-xs" data-testid="based-on">
+          <span style={{ color: "var(--muted)" }}>По мотивам инцидента{s.basedOn.length > 0 ? ": " : ""}</span>
+          {s.basedOn.join("; ")}
+        </p>
+      )}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs" style={{ color: "var(--muted)" }}>
         <span>⏱ ~{s.durationMin} мин</span>
         {s.startupSec != null && s.startupSec >= 90 && (

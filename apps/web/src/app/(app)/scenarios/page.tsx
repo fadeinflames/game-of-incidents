@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { prisma } from "@wom/db";
-import { parseSources } from "@wom/scenario";
+import { parseSources, sourceAttributions } from "@wom/scenario";
 import { requireUser } from "@/lib/auth";
 import { FINAL_SESSION_STATUSES } from "@/lib/labels";
 import { getCapacity } from "@/lib/capacity";
@@ -38,8 +38,9 @@ export default async function ScenariosPage() {
       durationMin: s.durationMin,
       tags: s.tags,
       kind: env.kind,
-      // only the fact leaves the server: the links themselves are shown after the session is over
+      // whose incident and when leaves the server; the title of the write-up and its link are shown after the session is over
       origin: parseSources(s.sourcesJson).length > 0 ? "postmortem" : "authored",
+      basedOn: sourceAttributions(s.sourcesJson),
       startupSec: env.startup?.expectedSec ?? null,
       progress: bestScore.has(s.id) ? { state: "solved", score: bestScore.get(s.id) ?? null } : triedIds.has(s.id) ? { state: "tried", score: null } : null,
     }];

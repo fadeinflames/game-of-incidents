@@ -66,6 +66,21 @@ export function parseSources(json: unknown): ScenarioSource[] {
   }).slice(0, MAX_SOURCES);
 }
 
+/** Whose incident it was and when: the part of a source title before the first ": " ("Company, DD.MM.YYYY: original title").
+ *  This much is shown before a session starts. The title of the write-up and its link stay with the finished session:
+ *  they usually name the cause. null when the title is not written that way. */
+export function sourceAttribution(title: string): string | null {
+  const i = title.indexOf(": ");
+  if (i < 2 || i > 60) return null;
+  const head = title.slice(0, i).trim();
+  return head.length >= 2 ? head : null;
+}
+
+/** the attributions of the stored sources, without repeats (two sources may be one company's) */
+export function sourceAttributions(json: unknown): string[] {
+  return [...new Set(parseSources(json).flatMap((s) => sourceAttribution(s.title) ?? []))];
+}
+
 /** the longest brief, debrief, guide or script that gets into the database (characters); the linter reports the same limit */
 export const MAX_TEXT_CHARS = 100_000;
 
