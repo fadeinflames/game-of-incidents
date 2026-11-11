@@ -1,0 +1,2 @@
+# tracker-export: hand new events to analytics every minute
+* * * * * tracker /usr/bin/python3 /opt/tracker/export.py >> /var/log/tracker/export.log 2>&1

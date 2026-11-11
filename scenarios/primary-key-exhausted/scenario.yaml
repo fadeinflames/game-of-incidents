@@ -1,0 +1,57 @@
+version: 2
+slug: primary-key-exhausted
+title: "Ключ закончился"
+summary: "Продукт перешёл в режим «только чтение»: старые данные открываются, а любое новое действие пользователя заканчивается ошибкой 500."
+type: "Linux, MariaDB, схема данных, AUTO_INCREMENT, миграция типов"
+difficulty: MIDDLE
+durationMin: 25
+tags: [linux, mariadb, mysql, schema, database, postmortem]
+
+contextJson:
+  infra: "Один сервер app-01 (Debian 12): сервис tracker-api (Python, порт 8080) записывает действия пользователей в MariaDB, база tracker. Раз в минуту задача tracker-export из cron передаёт новые события в аналитику."
+  services: ["mariadb", "tracker-api", "cron"]
+  setup: "Сегодня днём в базу загрузили историю действий из старой системы учёта: разовый импорт, около 80 тысяч событий. Релизов tracker-api сегодня не было."
+  time: "Пятница, после обеда"
+eventsJson:
+  - { t: 0, type: alert, title: "TrackerWriteErrors > 90 %", body: "Почти все POST /events отвечают 500. GET-запросы в норме." }
+  - { t: 4, type: event, title: "Поддержка", body: "Пользователи не могут оставить комментарий, закрыть задачу, загрузить файл. Читать всё могут." }
+  - { t: 9, type: event, title: "Аналитика", body: "Мы сегодня загрузили историю из старой системы, импорт прошёл без ошибок. Если это из-за нас, можем удалить загруженное." }
+hintsJson:
+  - level: 1
+    penalty: 0
+    text: "Направление: чтение работает, запись нет. База сама говорит, что ей не нравится: найди текст ошибки и прочитай его дословно, включая имя столбца."
+  - level: 2
+    penalty: 5
+    text: "Инструмент: /var/log/tracker/api.log хранит ошибку каждой неудачной записи. В базе: sudo mysql tracker, затем SHOW CREATE TABLE events и SELECT MAX(id) FROM events. После каждого исправления повтори запись и снова прочитай ошибку: она может смениться."
+  - level: 3
+    penalty: 15
+    text: "Почти ответ: events.id имеет тип INT и дошёл до 2 147 483 647. Нужен BIGINT: ALTER TABLE events MODIFY id BIGINT NOT NULL AUTO_INCREMENT. Тот же тип нужен всем столбцам, где хранится id события: найди их через information_schema.columns и проверь лог задачи выгрузки /var/log/tracker/export.log."
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+sources:
+  - title: "Basecamp, 09.11.2018: Postmortem on the read-only outage of Basecamp"
+    url: "https://signalvnoise.com/postmortem-on-the-read-only-outage-of-basecamp-on-november-9th-2018/"
+  - title: "GitHub, май 2026: GitHub availability report (инцидент 6 мая)"
+    url: "https://github.blog/news-insights/company-news/github-availability-report-may-2026/"
+
+environment:
+  kind: container
+  image: wom-scenario/primary-key-exhausted:dev
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  resources: { cpus: 1, memoryMb: 512, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: app-01
+  writable: ["/etc", "/var", "/home", "/root"]
+
+# the grader requires 64-bit ids, and the unbroken stand still has the 32-bit schema
+test: { baseline: fail }

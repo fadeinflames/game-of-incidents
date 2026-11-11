@@ -1,0 +1,43 @@
+# The sites behind front-01: name, port of the site's application, group, title.
+# Read by the application stand-ins, the traffic generator and the build-time config generator.
+www.polka.example 9001 main Polka
+brn.polka.example 9101 regions Polka / Barnaul
+chel.polka.example 9102 regions Polka / Chelyabinsk
+ekb.polka.example 9103 regions Polka / Yekaterinburg
+irk.polka.example 9104 regions Polka / Irkutsk
+izh.polka.example 9105 regions Polka / Izhevsk
+khv.polka.example 9106 regions Polka / Khabarovsk
+krd.polka.example 9107 regions Polka / Krasnodar
+krsk.polka.example 9108 regions Polka / Krasnoyarsk
+kzn.polka.example 9109 regions Polka / Kazan
+msk.polka.example 9110 regions Polka / Moscow
+nn.polka.example 9111 regions Polka / Nizhny Novgorod
+nsk.polka.example 9112 regions Polka / Novosibirsk
+omsk.polka.example 9113 regions Polka / Omsk
+prm.polka.example 9114 regions Polka / Perm
+rnd.polka.example 9115 regions Polka / Rostov-on-Don
+sam.polka.example 9116 regions Polka / Samara
+spb.polka.example 9117 regions Polka / Saint Petersburg
+srt.polka.example 9118 regions Polka / Saratov
+tlt.polka.example 9119 regions Polka / Tolyatti
+tmn.polka.example 9120 regions Polka / Tyumen
+ufa.polka.example 9121 regions Polka / Ufa
+vlg.polka.example 9122 regions Polka / Volgograd
+vrn.polka.example 9123 regions Polka / Voronezh
+yar.polka.example 9124 regions Polka / Yaroslavl
+api.polka.example 9201 services Polka API
+auth.polka.example 9202 services Polka sign-in
+blog.polka.example 9203 services Polka blog
+cabinet.polka.example 9204 services Polka seller cabinet
+docs.polka.example 9205 services Polka API documentation
+help.polka.example 9206 services Polka help centre
+img.polka.example 9207 services Polka images
+jobs.polka.example 9208 services Polka jobs
+m.polka.example 9209 services Polka mobile
+partners.polka.example 9210 services Polka for partners
+pay.polka.example 9211 services Polka payments
+promo.polka.example 9212 services Polka promo pages
+sale.polka.example 9213 services Polka sale
+search.polka.example 9214 services Polka search
+static.polka.example 9215 services Polka static files
+status.polka.example 9216 services Polka status page

@@ -31,6 +31,8 @@ function rowData(r: ImportRecord, extra: ImportExtra) {
     briefMd: r.briefMd,
     debriefMd: r.debriefMd,
     guideMd: r.guideMd ?? null,
+    // always written: a re-import without sources has to clear the old ones
+    sourcesJson: (r.sourcesJson ?? []) as Prisma.InputJsonValue,
     environmentJson: (r.environmentJson ?? Prisma.DbNull) as Prisma.InputJsonValue | typeof Prisma.DbNull,
     breakScript: r.breakScript,
     graderScript: r.graderScript,

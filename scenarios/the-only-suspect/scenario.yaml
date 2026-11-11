@@ -1,0 +1,57 @@
+version: 2
+slug: the-only-suspect
+title: "Единственный подозреваемый"
+summary: "Запросы к объектам хранилища зависают и падают по таймауту. В базе работает один-единственный процесс, все остальные ждут."
+type: "Linux, PostgreSQL, блокировки, автовакуум, DDL"
+difficulty: SENIOR
+durationMin: 35
+tags: [linux, postgresql, locks, autovacuum, ddl, database, postmortem]
+
+contextJson:
+  infra: "Один сервер meta-01 (Debian 12): слой метаданных объектного хранилища. Сервис storage-api (Python, порт 8080) на каждый запрос клиента читает или пишет строку таблицы objects в PostgreSQL 15, база metadata. Сервис changefeed передаёт изменения этой таблицы в биллинг."
+  services: ["postgresql", "storage-api", "changefeed"]
+  setup: "Релизов сегодня не было. Настройки PostgreSQL и сервисов не менялись несколько месяцев."
+  time: "Понедельник, 03:40, дежурная смена"
+eventsJson:
+  - { t: 0, type: alert, title: "StorageApiErrors > 80 %", body: "meta-01: запросы GET и PUT /objects/... отвечают 503 и 504. GET /healthz отвечает 200." }
+  - { t: 4, type: event, title: "Второй дежурный", body: "Заглянул в pg_stat_activity: там работает только автовакуум, всё остальное ждёт. В прошлый раз в похожей ситуации его просто сняли, и всё поехало. Если не поможет, перезапусти базу." }
+  - { t: 9, type: event, title: "Биллинг", body: "Лента изменений от meta-01 остановилась, счётчики использования не обновляются. Без ленты мы не закроем расчётный период." }
+hintsJson:
+  - level: 1
+    penalty: 0
+    text: "Направление: в очереди за блокировкой важен порядок. Посмотри не только на того, кто работает, но и на того, кто ждёт дольше всех: что это за запрос, чей он и какую блокировку просит."
+  - level: 2
+    penalty: 5
+    text: "Инструмент: sudo -u postgres psql -d metadata. В pg_stat_activity отсортируй ожидающих по query_start и добавь pg_blocking_pids(pid). В pg_locks для таблицы objects сравни режимы (mode) у выданных и невыданных блокировок. Потом снимай запросы по одному и смотри, что происходит в следующие полминуты."
+  - level: 3
+    penalty: 15
+    text: "Почти ответ: первым в очереди стоит DROP TRIGGER от сервиса changefeed. Он просит AccessExclusiveLock, ждёт автовакуум, а все чтения и записи встают уже за ним. Сервис повторяет это при каждой новой сессии. В /etc/changefeed/changefeed.conf поставь on_connect = verify, перезапусти changefeed и сними оставшийся в базе DROP TRIGGER через pg_terminate_backend. Автовакуум выключать не нужно: без этого запроса он никому не мешает."
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+sources:
+  - title: "Joyent, 27.07.2015: Postmortem for July 27 outage of the Manta service"
+    url: "https://web.archive.org/web/20220528044329/https://www.joyent.com/blog/manta-postmortem-7-27-2015"
+
+environment:
+  kind: container
+  image: wom-scenario/the-only-suspect:dev
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 50
+  startup: { expectedSec: 75, note: "Поднимаем базу метаданных и ждём, пока запросы встанут в очередь." }
+  resources: { cpus: 1, memoryMb: 384, pids: 512 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: meta-01
+  writable: ["/etc", "/var", "/home", "/root"]
+
+# the grader reproduces the failure on purpose (a long reader on the table plus a forced reconnect of changefeed), and the
+# unbroken stand still recreates the trigger on every new session: the hazard is there before the break
+test: { baseline: fail }

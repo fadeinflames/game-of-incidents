@@ -95,7 +95,7 @@ function stable(v: unknown): string {
   );
 }
 
-const META_KEYS = ["title", "summary", "type", "difficulty", "durationMin", "tags", "contextJson", "eventsJson", "hintsJson", "actionsJson", "gmScriptJson"] as const;
+const META_KEYS = ["title", "summary", "type", "difficulty", "durationMin", "tags", "contextJson", "eventsJson", "hintsJson", "actionsJson", "gmScriptJson", "sourcesJson"] as const;
 const meta = (s: Record<(typeof META_KEYS)[number], unknown>) => stable(Object.fromEntries(META_KEYS.map((k) => [k, s[k] ?? null])));
 
 const publishedSelect = {
@@ -116,6 +116,7 @@ const publishedSelect = {
   briefMd: true,
   debriefMd: true,
   guideMd: true,
+  sourcesJson: true,
   environmentJson: true,
   breakScript: true,
   graderScript: true,
@@ -154,7 +155,7 @@ export default async function AdminSubmissionPage({ params }: { params: Promise<
         const next = importVariants(record).regular;
         const curGuide = rows.find((r) => r.slug !== sub.slug)?.guideMd ?? null;
         const pairs: [string, string | null, string | null][] = [
-          ["Метаданные, события и подсказки", meta(cur), meta(next)],
+          ["Метаданные, события, подсказки и источники", meta(cur), meta(next)],
           ["Бриф", cur.briefMd, next.briefMd],
           ["Разбор", cur.debriefMd, next.debriefMd],
           ["Этапы помощи учебной версии", curGuide, record.guideMd],

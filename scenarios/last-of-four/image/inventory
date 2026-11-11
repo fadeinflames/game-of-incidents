@@ -1,0 +1,5 @@
+# Replicas of the internal DNS cluster: name and address.
+ns1  127.0.0.21
+ns2  127.0.0.22
+ns3  127.0.0.23
+ns4  127.0.0.24

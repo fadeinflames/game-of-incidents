@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { prisma } from "@wom/db";
-import { extractSections, REFERENCE_SECTIONS, splitGuide, splitSections } from "@wom/scenario";
+import { extractSections, parseSources, REFERENCE_SECTIONS, splitGuide, splitSections } from "@wom/scenario";
 import { requireUser } from "@/lib/auth";
 import { orchestrator, orchestratorPublicUrl, type PlayerSession } from "@/lib/orchestrator";
 import { FINAL_STATUSES, playerSessionFromRow } from "@/lib/session-record";
@@ -63,7 +63,7 @@ export default async function SessionPage({ params }: { params: Promise<{ id: st
 
   const scenario = await prisma.scenario.findUnique({
     where: { id: session.scenarioId },
-    select: { slug: true, title: true, difficulty: true, summary: true, briefMd: true, debriefMd: true, guideMd: true, hintsJson: true, durationMin: true, environmentJson: true },
+    select: { slug: true, title: true, difficulty: true, summary: true, briefMd: true, debriefMd: true, guideMd: true, sourcesJson: true, hintsJson: true, durationMin: true, environmentJson: true },
   });
   if (!scenario) notFound();
 
@@ -99,6 +99,8 @@ export default async function SessionPage({ params }: { params: Promise<{ id: st
       }}
       openedHints={openedHints}
       debrief={finished && scenario.debriefMd ? splitSections(scenario.debriefMd) : null}
+      // the source names the real incident, which gives the cause away: it travels with the debrief, never earlier
+      sources={finished ? parseSources(scenario.sourcesJson) : []}
       serverNow={Date.now()}
       wsBase={orchestratorPublicUrl()}
       contactUrl={contactUrl(`Проблема в сессии ${session.id}`)}

@@ -1,0 +1,63 @@
+version: 2
+slug: silent-pager
+title: "Тихий пейджер"
+summary: "Страницы магазина отвечают 502, в агрегаторе открыты circuit breaker на все сервисы сразу. Пейджер молчал: о сбое дежурному сообщили по телефону."
+type: "Kubernetes, CoreDNS, DNS, retry storm, лимиты памяти"
+difficulty: MIDDLE
+durationMin: 30
+tags: [kubernetes, dns, coredns, oom, retries, ndots, monitoring, postmortem]
+
+contextJson:
+  infra: "Кластер store-prod-1 (kind, одна нода: 2 ГБ, 1 CPU). Namespace store: aggregator собирает страницу товара из ответов восьми сервисов других команд (имена вида prices.int.shopnet.example) и сервиса sessions; shoppers изображает покупателей. Внешние имена кластерный DNS пересылает резолверу дата-центра dc-resolver (namespace infra). Мониторинг alert-relay отправляет алерты внешнему провайдеру оповещений."
+  services: ["aggregator", "shoppers", "sessions", "coredns", "dc-resolver", "alert-relay", "pager", "backends"]
+  setup: "Релизов магазина сегодня не было. Последние изменения в кластере: три недели назад плановый пересчёт запросов и лимитов системных подов (PLAT-3318), год назад переезд из старого дата-центра."
+  time: "Среда, 03:10, дежурная смена"
+eventsJson:
+  - { t: 0, type: msg, title: "Звонок от дежурного команды каталога", body: "«Страницы товаров не открываются уже минут двадцать: 502, в aggregator открыты circuit breaker на все сервисы подряд. У тебя пейджер молчал? У нас тоже ни одного алерта, узнали от поддержки.»" }
+  - { t: 3, type: event, title: "Команда рекомендаций", body: "«Незадолго до начала мы выкатывали новую модель, recs около минуты отвечал по 8 секунд. Откатили, сейчас отвечаем за 20 мс. К нам запросы от вас вообще не приходят.»" }
+  - { t: 8, type: event, title: "Дежурный команды каталога", body: "«aggregator мы перезапускали, не помогло. Давай на время отключим покупателей на балансере, пусть всё успокоится?»" }
+hintsJson:
+  - level: 1
+    penalty: 0
+    text: "Направление: aggregator и shoppers показывают следствие. Посмотри, какая ошибка стоит за открытыми circuit breaker, и найди компонент, от которого зависят сразу все вызовы по именам. Потом ответь на вопрос, почему он не поднимается сам, хотя recs давно в порядке."
+  - level: 2
+    penalty: 5
+    text: "Инструмент: kubectl -n store logs deploy/aggregator, затем kubectl -n kube-system get pods и describe pod (Last State, Reason, сколько прожил контейнер, Limits). Лог убитого контейнера почти пуст, поэтому смотри с двух сторон. Настройки DNS у клиента: kubectl -n store exec deploy/aggregator -- cat /etc/resolv.conf и dnsConfig в его Deployment. То, что доходит до резолвера дата-центра: kubectl -n infra logs deploy/dc-resolver. Сколько покупателей сейчас повторяют запросы: kubectl -n store exec deploy/shoppers -- curl -s localhost:9090/stats."
+  - level: 3
+    penalty: 15
+    text: "Почти ответ: CoreDNS убивает OOM killer, лимит памяти у него 32Mi (аннотация rightsizing на Deployment). Из-за ndots:5 каждый резолв внешнего имени в aggregator сначала перебирает search-домены; на запросы в dc1.corp.example никто не отвечает, и CoreDNS держит каждый около шести секунд. Толпа покупателей, которые повторяют запросы, убивает CoreDNS на каждом старте. Верни CoreDNS запас памяти: kubectl -n kube-system set resources deploy/coredns --limits=memory=170Mi --requests=memory=70Mi. И убери лишние запросы: в dnsConfig у aggregator поставь ndots 2 и убери search-домен dc1.corp.example. Перезапуск CoreDNS и отключение shoppers не помогают."
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+sources:
+  - title: "Zalando, 07.01.2019: Total DNS outage in Kubernetes cluster"
+    url: "https://github.com/zalando-incubator/kubernetes-on-aws/blob/dev/docs/postmortems/jan-2019-dns-outage.md"
+  - title: "Buildkite, 25.08.2026: Buildkite service disruption"
+    url: "https://www.buildkitestatus.com/incidents/tm6746k61p73"
+
+# the grader reads a 60 s window of served shoppers and wants 90 s of cluster DNS uptime: right after the manifests are
+# applied the window is empty and CoreDNS has not yet reloaded the Corefile. A warmed-up unbroken stand passes.
+test: { baseline: skip }
+
+environment:
+  kind: kubernetes
+  image: wom-tools:dev
+  cluster: { nodes: 1 }
+  manifests: ./k8s
+  # CoreDNS itself comes with the node image (kindest/node ships registry.k8s.io/coredns/coredns)
+  images: ["wom-scenario/silent-pager:dev"]
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 50
+  startup: { expectedSec: 150, note: "Поднимаем магазин с покупателями и ждём, пока сбой разовьётся." }
+  resources: { cpus: 1, memoryMb: 384, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: bastion
+  writable: ["/home", "/root", "/etc"]

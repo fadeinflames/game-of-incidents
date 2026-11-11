@@ -1,0 +1,199 @@
+# Everything that in real life lives outside of the cluster and is not ours to change:
+#   infra/dc-resolver   the datacenter resolver (network team); the cluster DNS forwards every non-cluster name to it
+#   outside/backends    the downstream services of other teams (one stand-in pod answers for all of them)
+#   outside/pager       the external paging provider
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: infra
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: outside
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dc-resolver
+  namespace: infra
+  annotations:
+    owner: network-team
+data:
+  resolver.conf: |
+    # dc-resolver: forwarding resolver of the datacenter. Owner: network team (#net-oncall).
+    local-ttl=5
+
+    # internal load balancers of the product teams
+    address=/prices.int.shopnet.example/10.96.20.10
+    address=/stock.int.shopnet.example/10.96.20.10
+    address=/reviews.int.shopnet.example/10.96.20.10
+    address=/recs.int.shopnet.example/10.96.20.10
+    address=/banners.int.shopnet.example/10.96.20.10
+    address=/delivery.int.shopnet.example/10.96.20.10
+    address=/sizes.int.shopnet.example/10.96.20.10
+    address=/brands.int.shopnet.example/10.96.20.10
+
+    # external services reachable from this segment
+    address=/events.pager.example/10.96.20.20
+
+    # zones of the old datacenter are served by its own resolvers
+    server=/corp.example/10.20.0.2
+
+    # anything else: NXDOMAIN
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dc-resolver
+  namespace: infra
+  labels: { app: dc-resolver }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: dc-resolver }
+  template:
+    metadata:
+      labels: { app: dc-resolver }
+    spec:
+      containers:
+        - name: resolver
+          image: wom-scenario/silent-pager:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: ROLE, value: resolver }
+          ports:
+            - { containerPort: 5353, name: dns, protocol: UDP }
+            - { containerPort: 8080, name: http }
+          volumeMounts:
+            - { name: config, mountPath: /etc/resolver }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 20m, memory: 24Mi }
+            limits: { memory: 64Mi }
+      volumes:
+        - name: config
+          configMap: { name: dc-resolver }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dc-resolver
+  namespace: infra
+spec:
+  clusterIP: 10.96.0.53
+  selector: { app: dc-resolver }
+  ports:
+    - { name: dns, port: 53, targetPort: dns, protocol: UDP }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backends
+  namespace: outside
+  labels: { app: backends }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: backends }
+  template:
+    metadata:
+      labels: { app: backends }
+    spec:
+      containers:
+        - name: backends
+          image: wom-scenario/silent-pager:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: ROLE, value: backend }
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 20m, memory: 24Mi }
+            limits: { memory: 96Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backends
+  namespace: outside
+spec:
+  clusterIP: 10.96.20.10
+  selector: { app: backends }
+  ports:
+    - { name: http, port: 80, targetPort: http }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pager
+  namespace: outside
+  labels: { app: pager }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: pager }
+  template:
+    metadata:
+      labels: { app: pager }
+    spec:
+      containers:
+        - name: pager
+          image: wom-scenario/silent-pager:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: ROLE, value: pager }
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 10m, memory: 24Mi }
+            limits: { memory: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pager
+  namespace: outside
+spec:
+  clusterIP: 10.96.20.20
+  selector: { app: pager }
+  ports:
+    - { name: http, port: 80, targetPort: http }
+---
+# Cluster DNS: the kubeadm Corefile of this cluster. Non-cluster names go to the datacenter resolver.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns
+  namespace: kube-system
+data:
+  Corefile: |
+    .:53 {
+        errors
+        health {
+           lameduck 5s
+        }
+        ready
+        kubernetes cluster.local in-addr.arpa ip6.arpa {
+           pods insecure
+           fallthrough in-addr.arpa ip6.arpa
+           ttl 30
+        }
+        prometheus :9153
+        forward . 10.96.0.53
+        cache 30 {
+           disable success cluster.local
+           disable denial cluster.local
+        }
+        loop
+        reload
+        loadbalance
+    }

@@ -324,6 +324,28 @@ test.describe("player", () => {
     await expect(chip).toContainText("✓");
   });
 
+  test("the catalogue splits into authored and postmortem scenarios", async ({ page }) => {
+    await page.goto("/scenarios");
+    const tab = page.getByTestId("origin-postmortem");
+    test.skip((await tab.count()) === 0, "this catalogue has no postmortem scenario");
+    await expect(page.getByRole("group", { name: "Происхождение" })).toBeVisible();
+    await expect(page.getByTestId("origin-all")).toHaveAttribute("aria-pressed", "true");
+    // the seeded nginx case is authored: it leaves the list on the postmortem tab and comes back on the authored one
+    await tab.click();
+    await expect(tab).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByTestId("origin-note")).toContainText("реальных инцидентов");
+    await expect(page.getByTestId("scenario-nginx-502-upstream")).toHaveCount(0);
+    await page.getByTestId("origin-authored").click();
+    await expect(page.getByTestId("scenario-nginx-502-upstream")).toBeVisible();
+    // the origin row comes before the level filter
+    const order = await page.evaluate(() => {
+      const a = document.querySelector("[aria-label=\"Происхождение\"]");
+      const b = document.querySelector("[aria-label=\"Уровень\"]");
+      return a && b ? Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) : false;
+    });
+    expect(order).toBe(true);
+  });
+
   test("the wheel picks a scenario from the filtered pool", async ({ page }) => {
     await page.goto("/scenarios");
     await page.getByTestId("tab-random").click();

@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""billing-refund: book the refund of a card charge.
+
+  billing-refund ch_000042 [ch_000043 ...]    request the refund at the card processor and write the 'refund' entry
+                                              (minus the charged amount) to the ledger
+  billing-refund -                            the same, charge ids are read from stdin, one per line
+  billing-refund --cancel ch_000042 [...]     withdraw a refund that was booked by mistake
+  billing-refund --list                       show the booked refunds
+
+The tool is idempotent: a charge is refunded once, however many times it is named.
+It does not touch the balances in Redis.
+"""
+import json
+import os
+import sqlite3
+import sys
+import time
+import urllib.error
+import urllib.request
+
+LEDGER = "/var/lib/billing/billing.db"
+CARDPROC = "http://127.0.0.1:8090"
+
+
+def call(method, path, payload=None):
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(CARDPROC + path, data=data, method=method, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status, json.load(resp)
+    except urllib.error.HTTPError as exc:
+        return exc.code, {}
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0 if args else 2
+    db = sqlite3.connect(LEDGER, timeout=10, isolation_level=None)
+
+    if args[0] == "--list":
+        rows = db.execute("SELECT ref, account_id, -amount_cents, ts FROM ledger WHERE kind = 'refund' ORDER BY id").fetchall()
+        for ref, account, amount, ts in rows:
+            print("%s  account=%d  amount=%d  booked %s" % (ref, account, amount, ts))
+        print("%d refunds, %d cents in total" % (len(rows), sum(r[2] for r in rows)))
+        return 0
+
+    cancel = args[0] == "--cancel"
+    ids = args[1:] if cancel else args
+    if ids == ["-"]:
+        ids = sys.stdin.read().split()
+    if not ids:
+        print("billing-refund: no charge ids given", file=sys.stderr)
+        return 2
+    if not os.access(LEDGER, os.W_OK) or not os.access(os.path.dirname(LEDGER), os.W_OK):
+        print("billing-refund: no write access to the ledger, run it with sudo", file=sys.stderr)
+        return 1
+
+    done = skipped = failed = 0
+    for charge_id in ids:
+        booked = db.execute("SELECT 1 FROM ledger WHERE kind = 'refund' AND ref = ?", (charge_id,)).fetchone()
+        if cancel:
+            status, _ = call("DELETE", "/refunds/" + charge_id)
+            if booked:
+                db.execute("DELETE FROM ledger WHERE kind = 'refund' AND ref = ?", (charge_id,))
+            if booked or status == 200:
+                done += 1
+            else:
+                skipped += 1
+            continue
+        status, reply = call("POST", "/refunds", {"charge_id": charge_id})
+        if status not in (200, 201):
+            print("billing-refund: %s: the card processor does not know this charge" % charge_id, file=sys.stderr)
+            failed += 1
+            continue
+        if booked:
+            skipped += 1
+            continue
+        charge = reply["charge"]
+        db.execute("INSERT INTO ledger (ts, account_id, kind, amount_cents, ref) VALUES (?, ?, 'refund', ?, ?)",
+                   (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), charge["account_id"], -charge["amount_cents"], charge_id))
+        done += 1
+    verb = "withdrawn" if cancel else "booked"
+    print("billing-refund: %d %s, %d skipped (%s), %d failed" % (
+        done, verb, skipped, "nothing to withdraw" if cancel else "already booked", failed))
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

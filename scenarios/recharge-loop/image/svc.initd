@@ -1,0 +1,51 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          billing-services
+# Required-Start:    $local_fs $network
+# Required-Stop:     $local_fs
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: one init script for the daemons of this host; the service is chosen by the script name
+### END INIT INFO
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+NAME=$(basename "$0")
+STOP_RETRY=TERM/5/KILL/2
+CONFIG=
+case "$NAME" in
+  # Redis runs in the foreground under this script; a stop is a SIGTERM, Redis shuts down the way its configuration says
+  redis-balances)    RUNAS=redis; CONFIG=/etc/redis/balances.conf;    LOG=/var/log/$NAME/redis.log ;;
+  redis-balances-r1) RUNAS=redis; CONFIG=/etc/redis/balances-r1.conf; LOG=/var/log/$NAME/redis.log ;;
+  redis-balances-r2) RUNAS=redis; CONFIG=/etc/redis/balances-r2.conf; LOG=/var/log/$NAME/redis.log ;;
+  cardproc)       RUNAS=cardproc; CMD="/usr/bin/python3 -u /opt/cardproc/cardproc.py";      LOG=/var/log/cardproc/cardproc.log ;;
+  billing-worker) RUNAS=billing;  CMD="/usr/bin/python3 -u /opt/billing/billing_worker.py"; LOG=/var/log/billing-worker/worker.log ;;
+  *) echo "unknown service: $NAME" >&2; exit 2 ;;
+esac
+if [ -n "$CONFIG" ]; then
+  # the configuration file of a Redis instance may be set in /etc/default/<service>
+  [ -r "/etc/default/$NAME" ] && . "/etc/default/$NAME"
+  CMD="/usr/bin/redis-server $CONFIG"
+  STOP_RETRY=TERM/20/KILL/2
+fi
+PIDFILE=/run/$NAME.pid
+
+. /lib/lsb/init-functions
+
+start() {
+  log_daemon_msg "Starting $NAME"
+  touch "$LOG" && chown "$RUNAS" "$LOG"
+  start-stop-daemon --start --quiet --oknodo --background --make-pidfile --pidfile "$PIDFILE" \
+    --chuid "$RUNAS" --no-close --startas /bin/sh -- -c "exec $CMD" >>"$LOG" 2>&1
+  log_end_msg $?
+}
+stop() {
+  log_daemon_msg "Stopping $NAME"
+  start-stop-daemon --stop --quiet --oknodo --retry=$STOP_RETRY --pidfile "$PIDFILE"
+  rc=$?; rm -f "$PIDFILE"; log_end_msg $rc
+}
+case "${1:-}" in
+  start) start ;;
+  stop) stop ;;
+  restart) stop; sleep 1; start ;;
+  status) status_of_proc -p "$PIDFILE" "$NAME" "$NAME" ;;
+  *) echo "Usage: service $NAME {start|stop|restart|status}"; exit 2 ;;
+esac

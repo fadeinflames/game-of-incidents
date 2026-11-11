@@ -43,6 +43,29 @@ export const serviceSchema = z
   })
   .strict();
 
+/**
+ * Where the incident comes from: a public postmortem or write-up the scenario retells. Shown to the player as a link under the
+ * debrief, so the address is held to plain https (no javascript:, data: or credentials in the link).
+ */
+export const SOURCE_URL_RE = /^https:\/\/[A-Za-z0-9.-]+(?::\d{1,5})?(?:\/[^\s<>"'`\\]*)?$/;
+export const sourceSchema = z
+  .object({
+    title: z.string().min(3).max(200),
+    url: z.string().max(500).regex(SOURCE_URL_RE, "url: an https:// address without spaces, quotes or credentials"),
+  })
+  .strict();
+export type ScenarioSource = z.infer<typeof sourceSchema>;
+export const MAX_SOURCES = 5;
+
+/** sources as they are read back from the database: rows are not re-validated on read, so anything malformed is dropped */
+export function parseSources(json: unknown): ScenarioSource[] {
+  if (!Array.isArray(json)) return [];
+  return json.flatMap((x) => {
+    const r = sourceSchema.safeParse(x);
+    return r.success ? [r.data] : [];
+  }).slice(0, MAX_SOURCES);
+}
+
 /** the longest brief, debrief, guide or script that gets into the database (characters); the linter reports the same limit */
 export const MAX_TEXT_CHARS = 100_000;
 
@@ -135,6 +158,8 @@ export const scenarioV2Schema = z
     debrief: z.string().optional(),
     /** teaching scenarios: markdown split by `## ` headings into stages the player reveals one by one, penalty-free */
     guide: z.string().optional(),
+    /** the public postmortems this scenario is based on (title + https link); shown under the debrief once the session is over */
+    sources: z.array(sourceSchema).max(MAX_SOURCES).default([]),
     environment: environmentSchema.nullable().default(null),
     /** regression-test knobs: baseline = what the grader must say on the UNBROKEN environment */
     test: z
@@ -220,6 +245,8 @@ export const importRecordSchema = z
     briefMd: z.string().max(MAX_TEXT_CHARS).nullable(),
     debriefMd: z.string().max(MAX_TEXT_CHARS).nullable(),
     guideMd: z.string().max(MAX_TEXT_CHARS).nullable().default(null),
+    /** the public postmortems the scenario is based on; optional so that files exported before the field existed still import */
+    sourcesJson: z.array(sourceSchema).max(MAX_SOURCES).default([]),
     /** environment without file references (image, resources, shell, …); null for text-only scenarios */
     environmentJson: publicEnvironmentSchema.nullable(),
     breakScript: z.string().max(MAX_TEXT_CHARS).nullable(),

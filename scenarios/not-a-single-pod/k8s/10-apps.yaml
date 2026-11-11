@@ -1,0 +1,142 @@
+# PLAT-1869: a pod-count quota in the application namespaces. It has plenty of room; it is here because
+# "quota exceeded" is the other well-known reason for FailedCreate and has to be ruled out, not guessed.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: pods
+  namespace: shop
+  annotations: { ticket: PLAT-1869 }
+spec:
+  hard: { pods: "20" }
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: pods
+  namespace: billing
+  annotations: { ticket: PLAT-1869 }
+spec:
+  hard: { pods: "20" }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: storefront
+  namespace: shop
+  labels: { app: storefront }
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: storefront }
+  template:
+    metadata:
+      labels: { app: storefront }
+    spec:
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: storefront
+          image: wom-scenario/not-a-single-pod:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: APP_NAME, value: storefront }
+            - { name: APP_VERSION, value: "1.8.2" }
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 10m, memory: 24Mi }
+            limits: { memory: 48Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: storefront
+  namespace: shop
+spec:
+  selector: { app: storefront }
+  ports:
+    - { port: 80, targetPort: http }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: invoicer
+  namespace: billing
+  labels: { app: invoicer }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: invoicer }
+  template:
+    metadata:
+      labels: { app: invoicer }
+    spec:
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: invoicer
+          image: wom-scenario/not-a-single-pod:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: APP_NAME, value: invoicer }
+            - { name: APP_VERSION, value: "0.14.0" }
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 10m, memory: 24Mi }
+            limits: { memory: 48Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: invoicer
+  namespace: billing
+spec:
+  selector: { app: invoicer }
+  ports:
+    - { port: 80, targetPort: http }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: status-page
+  namespace: tools
+  labels: { app: status-page }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: status-page }
+  template:
+    metadata:
+      labels: { app: status-page }
+    spec:
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: status-page
+          image: wom-scenario/not-a-single-pod:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: APP_NAME, value: status-page }
+            - { name: APP_VERSION, value: "2.1.0" }
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 10m, memory: 24Mi }
+            limits: { memory: 48Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: status-page
+  namespace: tools
+spec:
+  selector: { app: status-page }
+  ports:
+    - { port: 80, targetPort: http }

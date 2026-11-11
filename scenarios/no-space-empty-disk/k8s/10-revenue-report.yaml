@@ -1,0 +1,50 @@
+# The morning report: rebuilds the materialized view behind the "Revenue by channel" dashboard.
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: revenue-report-sql, namespace: default }
+data:
+  report.sql: |
+    \set ON_ERROR_STOP on
+    \timing on
+    REFRESH MATERIALIZED VIEW reporting.revenue_by_channel;
+    SELECT channel, sum(items) AS items, sum(revenue) AS revenue
+    FROM reporting.revenue_by_channel
+    GROUP BY channel
+    ORDER BY channel;
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: revenue-report, namespace: default, labels: { app: revenue-report } }
+spec:
+  schedule: "0 6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata: { labels: { app: revenue-report } }
+    spec:
+      backoffLimit: 1
+      template:
+        metadata: { labels: { app: revenue-report } }
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: report
+              image: postgres:16-alpine
+              imagePullPolicy: IfNotPresent
+              command: ["psql", "-X", "-f", "/report/report.sql"]
+              env:
+                - { name: PGHOST, value: sales-db }
+                - { name: PGDATABASE, value: sales }
+                - { name: PGUSER, value: report }
+                - name: PGPASSWORD
+                  valueFrom: { secretKeyRef: { name: sales-db, key: report-password } }
+                - { name: PGCONNECT_TIMEOUT, value: "10" }
+              volumeMounts:
+                - { name: sql, mountPath: /report }
+              resources:
+                requests: { cpu: 25m, memory: 32Mi }
+                limits: { memory: 64Mi }
+          volumes:
+            - name: sql
+              configMap: { name: revenue-report-sql }

@@ -1,0 +1,19 @@
+Changes to the nginx configuration of front-01. Newest first.
+
+@SPLIT_TIME@ UTC  OPS-2107  a.sokolov, d.orlova
+  nginx.conf was one file with every site in it. Split into one file per site, the file is named after server_name:
+    sites/00-default.conf   the catch-all block: unknown names go to the main site (not changed)
+    sites/                  the main site
+    sites/regions/          city sites, written from the old file by a script (a.sokolov)
+    sites/services/         service hosts, moved by hand (d.orlova)
+  nginx.conf now only has the common settings and the include lines.
+  New in the same window: sale.polka.example for the sale that starts this week (OPS-2112), added in the new layout.
+  beta.polka.example stays disabled, as before (OPS-1873).
+  The old file is kept as /etc/nginx/nginx.conf.before-OPS-2107.
+  Checks after the change: nginx -t ok, reload ok, www.polka.example opens.
+
+OPS-1873  d.orlova
+  beta.polka.example disabled: the beta stand is closed, its application is removed from the host.
+
+OPS-1640  a.sokolov
+  proxy_connect_timeout 2s for all sites: a dead application must not hold a visitor for a minute.

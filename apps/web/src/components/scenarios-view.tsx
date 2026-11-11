@@ -17,6 +17,8 @@ export type ScenarioCard = {
   durationMin: number;
   tags: string[];
   kind: "container" | "kubernetes";
+  /** "postmortem": made after a public write-up of a real incident (the scenario declares `sources`) */
+  origin: "authored" | "postmortem";
   /** declared usual startup time; heavy stacks (extra CNI, ingress, Prometheus…) say so on the card */
   startupSec: number | null;
   /** this person's own result; null when never finished an attempt */
@@ -30,6 +32,13 @@ const formatOf = (s: ScenarioCard): Format => (s.tags.includes("tutorial") ? "tu
 
 type Tab = "pick" | "random";
 
+type Origin = "all" | ScenarioCard["origin"];
+const ORIGINS: { key: Origin; label: string; note: string }[] = [
+  { key: "all", label: "Все", note: "" },
+  { key: "authored", label: "Авторские", note: "Придуманы авторами платформы и сообщества." },
+  { key: "postmortem", label: "Постмортемы", note: "Сделаны по мотивам публичных разборов реальных инцидентов. Ссылка на оригинал откроется под разбором после конца сессии." },
+];
+
 const LEVELS = ["JUNIOR", "MIDDLE", "SENIOR"] as const;
 const LEVEL_NOTE: Record<(typeof LEVELS)[number], string> = {
   JUNIOR: "первые инциденты, у многих есть учебная версия",
@@ -41,6 +50,7 @@ type Capacity = { all: { active: number; max: number }; kubernetes: { active: nu
 
 export function ScenariosView({ scenarios, capacity }: { scenarios: ScenarioCard[]; capacity: Capacity | null }) {
   const [tab, setTab] = useState<Tab>("pick");
+  const [origin, setOrigin] = useState<Origin>("all");
   const [difficulties, setDifficulties] = useState<Set<ScenarioCard["difficulty"]>>(new Set());
   const [kinds, setKinds] = useState<Set<ScenarioCard["kind"]>>(new Set());
   const [formats, setFormats] = useState<Set<Format>>(new Set());
@@ -49,19 +59,22 @@ export function ScenariosView({ scenarios, capacity }: { scenarios: ScenarioCard
     () =>
       scenarios.filter(
         (s) =>
+          (origin === "all" || s.origin === origin) &&
           (difficulties.size === 0 || difficulties.has(s.difficulty)) &&
           (kinds.size === 0 || kinds.has(s.kind)) &&
           (formats.size === 0 || formats.has(formatOf(s))),
       ),
-    [scenarios, difficulties, kinds, formats],
+    [scenarios, origin, difficulties, kinds, formats],
   );
 
   const solvedCount = useMemo(() => scenarios.filter((s) => s.progress?.state === "solved").length, [scenarios]);
+  const originCount = useMemo(() => ({ all: scenarios.length, authored: scenarios.filter((s) => s.origin === "authored").length, postmortem: scenarios.filter((s) => s.origin === "postmortem").length }), [scenarios]);
   const hasTutorials = useMemo(() => scenarios.some((s) => formatOf(s) === "tutorial"), [scenarios]);
 
   // the first-visit shortcut: the beginner view is the same filter a person could set by hand
   const showBeginnerView = () => {
     setTab("pick");
+    setOrigin("all");
     setDifficulties(new Set(["JUNIOR"]));
     setKinds(new Set());
     setFormats(new Set(["tutorial"]));
@@ -91,6 +104,23 @@ export function ScenariosView({ scenarios, capacity }: { scenarios: ScenarioCard
       <p className="mb-4 text-xs sm:hidden" style={{ color: "var(--muted)" }} data-testid="mobile-note">
         Терминал удобнее на компьютере: с телефона можно читать описания, а решать лучше за клавиатурой.
       </p>
+      {/* the first cut of the catalogue: where a scenario comes from. Hidden while the catalogue has no postmortem scenario */}
+      {originCount.postmortem > 0 && (
+        <div className="mb-5">
+          <div className="flex flex-wrap items-end gap-x-1 border-b border-[var(--border)]" role="group" aria-label="Происхождение">
+            {ORIGINS.map((o) => (
+              <OriginTab key={o.key} active={origin === o.key} onClick={() => setOrigin(o.key)} count={originCount[o.key]} testId={`origin-${o.key}`}>
+                {o.label}
+              </OriginTab>
+            ))}
+          </div>
+          {origin !== "all" && (
+            <p className="mt-2 text-xs" style={{ color: "var(--muted)" }} data-testid="origin-note">
+              {ORIGINS.find((o) => o.key === origin)?.note}
+            </p>
+          )}
+        </div>
+      )}
       <div className="mb-5 flex flex-wrap items-center gap-2" role="group" aria-label="Как выбрать сценарий">
         <TabButton active={tab === "pick"} onClick={() => setTab("pick")} testId="tab-pick">
           Выбрать самому
@@ -248,6 +278,25 @@ function TabButton({ active, onClick, children, testId }: { active: boolean; onC
     >
       {active && <span aria-hidden="true">✓ </span>}
       {children}
+    </button>
+  );
+}
+
+function OriginTab({ active, onClick, children, count, testId }: { active: boolean; onClick: () => void; children: React.ReactNode; count: number; testId: string }) {
+  return (
+    <button
+      aria-pressed={active}
+      data-testid={testId}
+      onClick={onClick}
+      className="-mb-px flex items-center gap-2 border-b-2 px-3 py-2 text-sm font-semibold transition-colors hover:text-[var(--accent)]"
+      style={{ borderColor: active ? "var(--accent)" : "transparent", color: active ? "var(--accent)" : "var(--text)" }}
+    >
+      {/* the state is not carried by colour alone (WCAG 1.4.1) */}
+      {active && <span aria-hidden="true">✓</span>}
+      {children}
+      <span className="rounded-full bg-inset px-2 py-0.5 text-[11px] font-normal tabular-nums" style={{ color: "var(--muted)" }}>
+        {count}
+      </span>
     </button>
   );
 }

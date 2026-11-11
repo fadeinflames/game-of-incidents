@@ -1,0 +1,56 @@
+version: 2
+slug: twenty-thousand-spaces
+title: "Двадцать тысяч пробелов"
+summary: "Форум отвечает 503 на любой адрес. Балансировщик вывел из ротации оба сервера, хотя процессы приложения живы и заняты работой."
+type: "Linux, haproxy, проверка здоровья, регулярные выражения, CPU"
+difficulty: MIDDLE
+durationMin: 25
+tags: [linux, haproxy, healthcheck, regex, cpu, postmortem]
+
+contextJson:
+  infra: "Один сервер web-01 (Debian 12): haproxy на порту 80 распределяет запросы между двумя экземплярами форума (Python, по четыре рабочих процесса, порты 8001 и 8002). Данные в SQLite. Главная страница показывает свежие вопросы пользователей."
+  services: ["haproxy", "forum-web1", "forum-web2"]
+  setup: "Релизов сегодня не было, конфигурацию никто не менял. Форум работал до последней минуты, потом лёг целиком и сам не поднимается."
+  time: "Среда, середина рабочего дня"
+eventsJson:
+  - { t: 0, type: alert, title: "ForumDown", body: "Внешняя проверка: любая страница форума отвечает 503 Service Unavailable." }
+  - { t: 5, type: event, title: "Разработчик форума", body: "Мы ничего не выкатывали с прошлой недели. Процессы на месте, я вижу их в ps. Перезапуск приложения помогает секунд на десять." }
+  - { t: 10, type: event, title: "Менеджер продукта", body: "Пользователи пишут, что не открываются даже старые вопросы по прямым ссылкам. Почему лежит вообще всё?" }
+hintsJson:
+  - level: 1
+    penalty: 0
+    text: "Направление: балансировщик считает оба сервера мёртвыми, хотя процессы живы. Выясни, по какому признаку он это решает и почему этот признак перестал выполняться."
+  - level: 2
+    penalty: 5
+    text: "Инструмент: причина вывода серверов записана в /var/log/haproxy/haproxy.log, сама проверка задана в /etc/haproxy/haproxy.cfg. Сравни время ответа экземпляра напрямую: curl -o /dev/null -s -w '%{time_total}' на 127.0.0.1:8001/ и на 127.0.0.1:8001/questions/1. Лог приложения /var/log/forum/web1.log показывает длительность каждого запроса, top покажет, чем заняты процессы."
+  - level: 3
+    penalty: 15
+    text: "Почти ответ: главная рендерит свежие вопросы, и в самом новом есть строка с двадцатью тысячами пробелов посередине. Регулярное выражение обрезки пробелов в /opt/forum/render.py на такой строке работает секунды. Замени его на обычный strip и перезапусти forum-web1 и forum-web2. Удалить пост мало: такой же опубликуют снова. Проверку здоровья стоит перевести с главной на /health."
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+sources:
+  - title: "Stack Overflow, 20.07.2016: Outage Postmortem"
+    url: "https://web.archive.org/web/20160720200842/https://stackstatus.net/post/147710624694/outage-postmortem-july-20-2016"
+
+environment:
+  kind: container
+  image: wom-scenario/twenty-thousand-spaces:dev
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  resources: { cpus: 1, memoryMb: 384, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: web-01
+  # the forum's code is deployed to /opt/forum and can be hot-fixed on the host
+  writable: ["/etc", "/var", "/home", "/root", "/opt/forum"]
+
+# the grader publishes a post with the problem content: an unbroken stand has the same weakness and fails that criterion
+test: { baseline: fail }

@@ -1,0 +1,171 @@
+# The shared production contour of a hosted metrics service: customers' agents -> gateway -> three ingesters.
+# The gateway writes every batch to the ingesters of its ring and needs two acknowledgements out of three.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: metrics
+  labels: { contour: shared, environment: production }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ingester
+  namespace: metrics
+spec:
+  clusterIP: None
+  selector: { app: ingester }
+  ports:
+    - { name: http, port: 9095, targetPort: http }
+---
+# An ingester asks for a quarter of a node: three of them fill it. break.sh scales the CPU request to the node the
+# stand really got (the kubelet of a kind node reports the CPUs of the host), the number here fits a 1-CPU node.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ingester
+  namespace: metrics
+  labels: { app: ingester }
+spec:
+  serviceName: ingester
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels: { app: ingester }
+  template:
+    metadata:
+      labels: { app: ingester }
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: ingester
+          image: wom-scenario/give-way:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: ROLE, value: ingester }
+            - { name: RING_URL, value: "http://gateway.metrics.svc.cluster.local" }
+            - name: POD_IP
+              valueFrom: { fieldRef: { fieldPath: status.podIP } }
+          ports:
+            - { containerPort: 9095, name: http }
+          readinessProbe:
+            httpGet: { path: /ready, port: http }
+            periodSeconds: 2
+          resources:
+            requests: { cpu: 250m, memory: 48Mi }
+            limits: { memory: 96Mi }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ingester
+  namespace: metrics
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels: { app: ingester }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: metrics
+spec:
+  selector: { app: gateway }
+  ports:
+    - { name: http, port: 80, targetPort: http }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: metrics
+  labels: { app: gateway }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: gateway }
+  template:
+    metadata:
+      labels: { app: gateway }
+    spec:
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: gateway
+          image: wom-scenario/give-way:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: ROLE, value: gateway }
+            - { name: REPLICATION_FACTOR, value: "3" }
+            - { name: WRITE_QUORUM, value: "2" }
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+            limits: { memory: 96Mi }
+---
+# the customers' agents (in real life they run outside the cluster): one batch a second, failed batches are retried
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agents
+  namespace: metrics
+  labels: { app: agents }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: agents }
+  template:
+    metadata:
+      labels: { app: agents }
+    spec:
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: agents
+          image: wom-scenario/give-way:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: ROLE, value: agents }
+            - { name: GATEWAY_URL, value: "http://gateway.metrics.svc.cluster.local" }
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+            limits: { memory: 96Mi }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alerting
+  namespace: monitoring
+  labels: { app: alerting }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: alerting }
+  template:
+    metadata:
+      labels: { app: alerting }
+    spec:
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: alerting
+          image: wom-scenario/give-way:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: ROLE, value: alerting }
+            - { name: GATEWAY_URL, value: "http://gateway.metrics.svc.cluster.local" }
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+            limits: { memory: 64Mi }

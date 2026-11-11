@@ -1,0 +1,101 @@
+# What the removal of the mesh (PLAT-1873) left behind. No mesh is installed: these are plain objects.
+# The removal went through the workloads of istio-system by hand; cluster-scoped objects and the things other
+# charts own were not on the list. The injector webhook itself is created by break.sh (it would block the
+# application pods at start-up otherwise).
+
+# The metrics Service of the control plane, owned by the monitoring chart, so it survived. It never had the
+# webhook port (443), and there are no pods behind it any more.
+apiVersion: v1
+kind: Service
+metadata:
+  name: istiod
+  namespace: istio-system
+  labels:
+    app: istiod
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: stage-monitoring
+  annotations:
+    meta.helm.sh/release-name: stage-monitoring
+    meta.helm.sh/release-namespace: monitoring
+spec:
+  selector: { app: istiod }
+  ports:
+    - { name: http-monitoring, port: 15014, targetPort: 15014 }
+---
+# The mesh used to copy its root certificate into every namespace.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: istio-ca-root-cert
+  namespace: shop
+  labels: { istio.io/config: "true" }
+data:
+  root-cert.pem: |
+    -----BEGIN CERTIFICATE-----
+    MIIBhTCCASugAwIBAgIURFh8v8QUhRNnwtC7GWgbUkgOC1IwCgYIKoZIzj0EAwIw
+    GDEWMBQGA1UECgwNY2x1c3Rlci5sb2NhbDAeFw0yNjExMTAwNzU1NTdaFw0zNjEx
+    MDcwNzU1NTdaMBgxFjAUBgNVBAoMDWNsdXN0ZXIubG9jYWwwWTATBgcqhkjOPQIB
+    BggqhkjOPQMBBwNCAAQUChYxrAKEYw9HR5s/IZI89/4iP5zxIVPBCOuJwqQFNqZY
+    vLYs+QC7dhyqjLej9iSxG3u+eXZL4GFlg9DLzc5Vo1MwUTAdBgNVHQ4EFgQU8xZh
+    KaFzezVgaj9oLOWcErq1DzEwHwYDVR0jBBgwFoAU8xZhKaFzezVgaj9oLOWcErq1
+    DzEwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiEAk8VywraeoZn+
+    HRQ6gRsrsYuIKv8lPj75frZmz+/2quoCICtUF9MU15ra5Kh2+mCZCw/tTicIT4lp
+    GocApo5b8KD6
+    -----END CERTIFICATE-----
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: istio-ca-root-cert
+  namespace: billing
+  labels: { istio.io/config: "true" }
+data:
+  root-cert.pem: |
+    -----BEGIN CERTIFICATE-----
+    MIIBhTCCASugAwIBAgIURFh8v8QUhRNnwtC7GWgbUkgOC1IwCgYIKoZIzj0EAwIw
+    GDEWMBQGA1UECgwNY2x1c3Rlci5sb2NhbDAeFw0yNjExMTAwNzU1NTdaFw0zNjEx
+    MDcwNzU1NTdaMBgxFjAUBgNVBAoMDWNsdXN0ZXIubG9jYWwwWTATBgcqhkjOPQIB
+    BggqhkjOPQMBBwNCAAQUChYxrAKEYw9HR5s/IZI89/4iP5zxIVPBCOuJwqQFNqZY
+    vLYs+QC7dhyqjLej9iSxG3u+eXZL4GFlg9DLzc5Vo1MwUTAdBgNVHQ4EFgQU8xZh
+    KaFzezVgaj9oLOWcErq1DzEwHwYDVR0jBBgwFoAU8xZhKaFzezVgaj9oLOWcErq1
+    DzEwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAgNIADBFAiEAk8VywraeoZn+
+    HRQ6gRsrsYuIKv8lPj75frZmz+/2quoCICtUF9MU15ra5Kh2+mCZCw/tTicIT4lp
+    GocApo5b8KD6
+    -----END CERTIFICATE-----
+---
+# The mesh API types: nobody deleted the CRDs, there are no objects of these kinds.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: virtualservices.networking.istio.io
+  labels: { app: istio-pilot, release: istio }
+spec:
+  group: networking.istio.io
+  scope: Namespaced
+  names: { kind: VirtualService, listKind: VirtualServiceList, plural: virtualservices, singular: virtualservice, shortNames: [vs] }
+  versions:
+    - name: v1beta1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          x-kubernetes-preserve-unknown-fields: true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: destinationrules.networking.istio.io
+  labels: { app: istio-pilot, release: istio }
+spec:
+  group: networking.istio.io
+  scope: Namespaced
+  names: { kind: DestinationRule, listKind: DestinationRuleList, plural: destinationrules, singular: destinationrule, shortNames: [dr] }
+  versions:
+    - name: v1beta1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          x-kubernetes-preserve-unknown-fields: true

@@ -1,0 +1,163 @@
+# The sales database: PostgreSQL 16 in a StatefulSet, data on a PVC, configuration in a ConfigMap.
+apiVersion: v1
+kind: Secret
+metadata: { name: sales-db, namespace: default }
+type: Opaque
+stringData:
+  postgres-password: "pg-admin-4e1c"
+  report-password: "report-9b27"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: sales-db-config, namespace: default }
+data:
+  postgresql.conf: |
+    # sales-db: PostgreSQL 16, reporting workload. Changes go through the DBA team (ticket DBA-118).
+    listen_addresses = '*'
+    max_connections = 40
+    shared_buffers = 64MB
+
+    # query memory and parallel query: sized for the analysts' reports, agreed in DBA-118
+    work_mem = 32MB
+    maintenance_work_mem = 32MB
+    max_worker_processes = 8
+    max_parallel_workers = 4
+    max_parallel_workers_per_gather = 2
+    jit = off
+
+    # WAL
+    max_wal_size = 256MB
+    min_wal_size = 64MB
+
+    # logging
+    log_line_prefix = '%m [%p] %u@%d '
+    log_min_duration_statement = 5000
+---
+# Stand-in for the provisioning pipeline and for months of nightly loads: roles, schemas and the sales history
+# of three channels. The data is generated, deterministic, and is loaded once, on the first start of an empty volume.
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: sales-db-init, namespace: default }
+data:
+  10-schema.sql: |
+    CREATE ROLE etl LOGIN;
+    CREATE ROLE report LOGIN PASSWORD 'report-9b27';
+    CREATE SCHEMA sales AUTHORIZATION etl;
+    CREATE SCHEMA etl AUTHORIZATION etl;
+    CREATE SCHEMA reporting AUTHORIZATION report;
+    GRANT USAGE ON SCHEMA sales TO report;
+    GRANT USAGE ON SCHEMA reporting TO PUBLIC;
+
+    SET ROLE etl;
+    CREATE TABLE sales.orders (
+      id          bigint PRIMARY KEY,
+      created_at  timestamp NOT NULL,
+      customer_id integer NOT NULL,
+      city        text NOT NULL,
+      channel     text NOT NULL,
+      status      text NOT NULL
+    );
+    CREATE TABLE sales.order_items (
+      order_id bigint NOT NULL,
+      sku      integer NOT NULL,
+      qty      integer NOT NULL,
+      price    numeric(10,2) NOT NULL
+    );
+    CREATE TABLE etl.load_log (
+      id        serial PRIMARY KEY,
+      loaded_at timestamp NOT NULL DEFAULT now(),
+      source    text NOT NULL,
+      orders    integer NOT NULL,
+      items     integer NOT NULL,
+      note      text
+    );
+    GRANT SELECT ON sales.orders, sales.order_items TO report;
+    GRANT SELECT ON etl.load_log TO PUBLIC;
+    GRANT USAGE ON SCHEMA etl TO PUBLIC;
+    RESET ROLE;
+  20-data.sql: |
+    SET ROLE etl;
+    -- 600 000 orders of the web, mobile and retail channels over the last 300 days, two items per order
+    INSERT INTO sales.orders
+    SELECT g,
+           date_trunc('day', now()) - (1 + g % 300) * interval '1 day' + (g % 86400) * interval '1 second',
+           ((g::bigint * 7919) % 180000)::int,
+           (ARRAY['Moscow','Saint Petersburg','Novosibirsk','Yekaterinburg','Kazan','Nizhny Novgorod',
+                  'Chelyabinsk','Samara','Omsk','Rostov-on-Don','Ufa','Krasnoyarsk'])[1 + g % 12],
+           (ARRAY['web','mobile','retail'])[1 + (g / 12) % 3],
+           CASE WHEN g % 50 = 0 THEN 'refunded' ELSE 'paid' END
+    FROM generate_series(1, 600000) g;
+    INSERT INTO sales.order_items
+    SELECT 1 + (g % 600000), (g * 31) % 5000, 1 + g % 3, (100 + (g * 37) % 9900)::numeric / 10
+    FROM generate_series(1, 1200000) g;
+    INSERT INTO etl.load_log (loaded_at, source, orders, items, note)
+    SELECT date_trunc('day', now() - interval '3 hours') - d * interval '1 day' + interval '2 hours 10 minutes',
+           'daily-increment', 1900 + (d * 37) % 200, 3800 + (d * 74) % 400, 'web, mobile, retail'
+    FROM generate_series(7, 1, -1) d;
+    ANALYZE sales.orders;
+    ANALYZE sales.order_items;
+    RESET ROLE;
+  30-report.sql: |
+    -- the source of the "Revenue by channel" dashboard; the revenue-report CronJob refreshes it every morning
+    SET ROLE report;
+    CREATE MATERIALIZED VIEW reporting.revenue_by_channel AS
+    SELECT o.city, o.channel, count(*) AS items, sum(i.qty * i.price) AS revenue
+    FROM sales.order_items i
+    JOIN sales.orders o ON o.id = i.order_id
+    WHERE o.status = 'paid'
+    GROUP BY o.city, o.channel;
+    GRANT SELECT ON reporting.revenue_by_channel TO PUBLIC;
+    RESET ROLE;
+---
+apiVersion: v1
+kind: Service
+metadata: { name: sales-db, namespace: default, labels: { app: sales-db } }
+spec:
+  selector: { app: sales-db }
+  ports: [{ name: postgres, port: 5432, targetPort: 5432 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: sales-db, namespace: default, labels: { app: sales-db } }
+spec:
+  serviceName: sales-db
+  replicas: 1
+  selector: { matchLabels: { app: sales-db } }
+  template:
+    metadata: { labels: { app: sales-db } }
+    spec:
+      terminationGracePeriodSeconds: 20
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          args: ["-c", "config_file=/etc/postgresql/postgresql.conf"]
+          env:
+            - { name: POSTGRES_DB, value: sales }
+            - { name: POSTGRES_USER, value: postgres }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: sales-db, key: postgres-password } }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports: [{ containerPort: 5432, name: postgres }]
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: config, mountPath: /etc/postgresql }
+            - { name: init, mountPath: /docker-entrypoint-initdb.d }
+          # TCP is closed while the first start loads the data, so the pod turns Ready only with the data in place
+          readinessProbe:
+            exec: { command: ["pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "sales"] }
+            periodSeconds: 3
+            timeoutSeconds: 3
+          resources:
+            requests: { cpu: 100m, memory: 192Mi }
+            limits: { memory: 384Mi }
+      volumes:
+        - name: config
+          configMap: { name: sales-db-config }
+        - name: init
+          configMap: { name: sales-db-init }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 5Gi } }

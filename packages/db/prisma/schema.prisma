@@ -86,6 +86,7 @@ model Scenario {
   briefMd        String?
   debriefMd      String?  // never sent to the player before the session is finished
   guideMd        String?  // teaching stages (## headings), revealed one by one, penalty-free
+  sourcesJson    Json     @default("[]") // [{title, url}]: public postmortems the scenario retells; shown under the debrief
   environmentJson Json?   // environment minus secret scripts; null => text-only scenario
   breakScript    String?  // SECRET
   graderScript   String?  // SECRET

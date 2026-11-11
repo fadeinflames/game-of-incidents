@@ -1,0 +1,26 @@
+# Application namespaces of the stage cluster. shop and billing were in the mesh: the injection label is still on them.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shop
+  labels: { team: storefront, istio-injection: enabled }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: billing
+  labels: { team: finance, istio-injection: enabled }
+---
+# tools was never in the mesh
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tools
+  labels: { team: platform }
+---
+# what is left of the removed mesh lives here (see 20-mesh-leftovers.yaml)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: istio-system
+  labels: { team: platform }

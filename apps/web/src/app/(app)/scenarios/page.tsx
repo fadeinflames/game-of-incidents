@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { prisma } from "@wom/db";
+import { parseSources } from "@wom/scenario";
 import { requireUser } from "@/lib/auth";
 import { FINAL_SESSION_STATUSES } from "@/lib/labels";
 import { getCapacity } from "@/lib/capacity";
@@ -14,7 +15,7 @@ export default async function ScenariosPage() {
     prisma.scenario.findMany({
       where: { isPublished: true },
       orderBy: { createdAt: "asc" },
-      select: { id: true, slug: true, title: true, summary: true, type: true, difficulty: true, durationMin: true, tags: true, environmentJson: true },
+      select: { id: true, slug: true, title: true, summary: true, type: true, difficulty: true, durationMin: true, tags: true, environmentJson: true, sourcesJson: true },
     }),
     // what this person has already done: the best score of a solved scenario and a mark for any finished attempt
     prisma.trainingSession.groupBy({ by: ["scenarioId"], where: { userId: user.id, status: "FINISHED" }, _max: { score: true } }),
@@ -37,6 +38,8 @@ export default async function ScenariosPage() {
       durationMin: s.durationMin,
       tags: s.tags,
       kind: env.kind,
+      // only the fact leaves the server: the links themselves are shown after the session is over
+      origin: parseSources(s.sourcesJson).length > 0 ? "postmortem" : "authored",
       startupSec: env.startup?.expectedSec ?? null,
       progress: bestScore.has(s.id) ? { state: "solved", score: bestScore.get(s.id) ?? null } : triedIds.has(s.id) ? { state: "tried", score: null } : null,
     }];

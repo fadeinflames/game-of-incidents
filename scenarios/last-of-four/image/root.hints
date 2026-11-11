@@ -1,0 +1,3 @@
+; Root hints. This stand has no Internet: the root server is played by the extdns service on loopback.
+.                       3600000 IN NS a.root-servers.stand.
+a.root-servers.stand.   3600000 IN A  127.0.0.201

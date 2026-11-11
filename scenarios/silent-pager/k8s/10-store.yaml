@@ -1,0 +1,167 @@
+# The store: shoppers (load simulator) -> aggregator -> downstream services (by their names) and sessions.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: store
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sessions
+  namespace: store
+  labels: { app: sessions }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: sessions }
+  template:
+    metadata:
+      labels: { app: sessions }
+    spec:
+      containers:
+        - name: sessions
+          image: wom-scenario/silent-pager:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: ROLE, value: backend }
+            - { name: SERVICE_NAME, value: sessions }
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 10m, memory: 24Mi }
+            limits: { memory: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sessions
+  namespace: store
+spec:
+  selector: { app: sessions }
+  ports:
+    - { name: http, port: 80, targetPort: http }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aggregator-config
+  namespace: store
+data:
+  downstreams.conf: |
+    # name = url. The product page needs every block: one HTTP call to each service per request.
+    sessions = http://sessions/
+    prices   = http://prices.int.shopnet.example/
+    stock    = http://stock.int.shopnet.example/
+    reviews  = http://reviews.int.shopnet.example/
+    recs     = http://recs.int.shopnet.example/
+    banners  = http://banners.int.shopnet.example/
+    delivery = http://delivery.int.shopnet.example/
+    sizes    = http://sizes.int.shopnet.example/
+    brands   = http://brands.int.shopnet.example/
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aggregator
+  namespace: store
+  labels: { app: aggregator }
+  annotations:
+    platform.shopnet.example/dns-profile: "legacy-dc1: search domain dc1.corp.example for short names of hosts in the old datacenter; timeout:1 since PLAT-2210 (lookups of partner names used to hang for 10 s)"
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: aggregator }
+  template:
+    metadata:
+      labels: { app: aggregator }
+    spec:
+      dnsConfig:
+        searches:
+          - dc1.corp.example
+        options:
+          - { name: timeout, value: "1" }
+      containers:
+        - name: aggregator
+          image: wom-scenario/silent-pager:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: ROLE, value: aggregator }
+            - { name: CALL_TIMEOUT_MS, value: "5000" }
+            - { name: DNS_CACHE_TTL_SEC, value: "0" }
+          ports:
+            - { containerPort: 8080, name: http }
+          volumeMounts:
+            - { name: config, mountPath: /etc/aggregator }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            requests: { cpu: 50m, memory: 48Mi }
+            limits: { memory: 192Mi }
+      volumes:
+        - name: config
+          configMap: { name: aggregator-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aggregator
+  namespace: store
+spec:
+  clusterIP: 10.96.30.10
+  selector: { app: aggregator }
+  ports:
+    - { name: http, port: 80, targetPort: http }
+---
+# Load simulator: stands for the browsers of the customers. They come through the public address of the store
+# (10.96.30.10), not through the cluster DNS.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shoppers
+  namespace: store
+  labels: { app: shoppers }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: shoppers }
+  template:
+    metadata:
+      labels: { app: shoppers }
+    spec:
+      containers:
+        - name: shoppers
+          image: wom-scenario/silent-pager:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: ROLE, value: shoppers }
+            - { name: TARGET_URL, value: "http://10.96.30.10/page" }
+            - { name: SHOPPERS_PER_SEC, value: "1" }
+            - { name: RETRY_AFTER_MS, value: "3000" }
+            - { name: PATIENCE_SEC, value: "60" }
+          ports:
+            - { containerPort: 9090, name: stats }
+          readinessProbe:
+            httpGet: { path: /healthz, port: stats }
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            requests: { cpu: 30m, memory: 32Mi }
+            limits: { memory: 96Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shoppers
+  namespace: store
+spec:
+  clusterIP: 10.96.30.20
+  selector: { app: shoppers }
+  ports:
+    - { name: stats, port: 9090, targetPort: stats }

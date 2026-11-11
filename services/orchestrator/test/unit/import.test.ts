@@ -22,6 +22,7 @@ function record(over: Partial<ImportRecord> = {}): ImportRecord {
     briefMd: null,
     debriefMd: null,
     guideMd: null,
+    sourcesJson: [],
     environmentJson: null,
     breakScript: null,
     graderScript: null,

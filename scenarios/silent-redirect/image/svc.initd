@@ -1,0 +1,38 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          front-services
+# Required-Start:    $local_fs $network
+# Required-Stop:     $local_fs
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: one init script for the small daemons of this host; the service is chosen by the script name
+### END INIT INFO
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+NAME=$(basename "$0")
+case "$NAME" in
+  site-backends) RUNAS=sites;  CMD="/usr/bin/python3 /opt/site-backends/backends.py"; LOG=/var/log/site-backends/backends.log ;;
+  trafficgen)    RUNAS=nobody; CMD="/usr/bin/python3 /opt/trafficgen/trafficgen.py";  LOG=/dev/null ;;
+  *) echo "unknown service: $NAME" >&2; exit 2 ;;
+esac
+PIDFILE=/run/$NAME.pid
+
+. /lib/lsb/init-functions
+
+start() {
+  log_daemon_msg "Starting $NAME"
+  start-stop-daemon --start --quiet --oknodo --background --make-pidfile --pidfile "$PIDFILE" \
+    --chuid "$RUNAS" --no-close --startas /bin/sh -- -c "exec $CMD" >>"$LOG" 2>&1
+  log_end_msg $?
+}
+stop() {
+  log_daemon_msg "Stopping $NAME"
+  start-stop-daemon --stop --quiet --oknodo --retry=TERM/5/KILL/2 --pidfile "$PIDFILE"
+  rc=$?; rm -f "$PIDFILE"; log_end_msg $rc
+}
+case "${1:-}" in
+  start) start ;;
+  stop) stop ;;
+  restart) stop; sleep 1; start ;;
+  status) status_of_proc -p "$PIDFILE" "$NAME" "$NAME" ;;
+  *) echo "Usage: service $NAME {start|stop|restart|status}"; exit 2 ;;
+esac

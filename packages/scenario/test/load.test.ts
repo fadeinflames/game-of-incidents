@@ -55,6 +55,7 @@ const record = (over: Partial<ImportRecord> = {}): ImportRecord => ({
   briefMd: BRIEF,
   debriefMd: "## Что было сломано\n",
   guideMd: null,
+  sourcesJson: [],
   environmentJson: null,
   breakScript: null,
   graderScript: null,

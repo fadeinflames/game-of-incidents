@@ -1,0 +1,56 @@
+version: 2
+slug: last-of-four
+title: "Последний из четырёх"
+summary: "Выпуск сертификатов остановился, дашборды мониторинга пусты. Внутренние имена разрешаются как раньше, внешние не разрешает ни одна из четырёх реплик DNS."
+type: "Linux, DNS, unbound, генерация конфигурации, поэтапное обновление"
+difficulty: MIDDLE
+durationMin: 25
+tags: [linux, dns, unbound, config, rollout, postmortem]
+
+contextJson:
+  infra: "Стенд dns-01 (Debian 12) изображает внутренний DNS-кластер сервиса выпуска сертификатов: четыре реплики unbound, ns1–ns4, адреса 127.0.0.21–24. Каждая реплика авторитетна для зоны internal и сама рекурсивно разрешает внешние имена. Через кластер ищут всё, с чем работают: сервис выпуска issuer и агент мониторинга mon-agent. Внешний DNS изображает сервис extdns."
+  services: ["dns-ns1", "dns-ns2", "dns-ns3", "dns-ns4", "issuer", "mon-agent", "extdns"]
+  setup: "Четвёртый день идёт обновление ОС на репликах DNS (заявка OPS-3117): по одной реплике в день, каждая пересобирается на месте командой dns-rebuild. Сегодня пересобрали последнюю, ns4. Релизов issuer и mon-agent не было."
+  time: "Вторник, утро"
+eventsJson:
+  - { t: 0, type: alert, title: "IssuanceFailing", body: "Внешняя проверка: новые сертификаты не выпускаются, заказы завершаются ошибкой." }
+  - { t: 3, type: event, title: "Дежурный по мониторингу", body: "Дашборды пустые: метрики перестали приходить несколько минут назад. Сам агент жив. Мы сейчас работаем вслепую." }
+  - { t: 8, type: event, title: "Инженер, который ведёт OPS-3117", body: "Пересборка ns4 прошла успешно, проверка зелёная, как и на трёх предыдущих. Старого экземпляра больше нет, откатывать нечего. Могу пока прописать issuer адреса логов и точек валидации статикой, чтобы выпуск пошёл." }
+hintsJson:
+  - level: 1
+    penalty: 0
+    text: "Направление: выясни, на какие имена кластер отвечает, а на какие нет, и спроси каждую реплику отдельно. Потом разберись, откуда реплика должна брать ответ на имена, за которые не отвечает сама, и откуда она берёт его на деле."
+  - level: 2
+    penalty: 5
+    text: "Инструмент: dig @127.0.0.21 имя для каждой из четырёх реплик. Причину SERVFAIL реплика пишет в /var/log/dns-ns1/unbound.log. Куда она пересылает запросы, показывает sudo unbound-control -c /etc/dns-cluster/ns1/unbound.conf list_forwards. Как собирался её конфиг, видно в /var/log/dns-rebuild/rebuild.log и в выводе sudo dns-rebuild --dry-run ns1."
+  - level: 3
+    penalty: 15
+    text: "Почти ответ: задание пересборки в /etc/dns-provision/rebuild.conf передаёт рендереру опцию --auto-forwarders, и каждая пересобранная реплика пересылает внешние запросы следующей по списку: ns1 → ns2 → ns3 → ns4 → ns1. Пока ns4 была старой, цепочка заканчивалась на ней. Убери опцию, проверь результат через sudo dns-rebuild --dry-run ns1 и пересобери все четыре реплики по очереди: sudo dns-rebuild ns1 и так далее. Статические записи и публичный резолвер в настройках клиентов причину не убирают."
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+sources:
+  - title: "Let's Encrypt, 21.07.2025: 2025-07-21 Complete API Outage"
+    url: "https://community.letsencrypt.org/t/2025-07-21-complete-api-outage/240985"
+
+environment:
+  kind: container
+  image: wom-scenario/last-of-four:dev
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  startup: { expectedSec: 60, note: "Пересобираем последнюю реплику и ждём, пока у остальных истечёт кэш." }
+  resources: { cpus: 1, memoryMb: 192, pids: 256 }
+  network: { egress: none }
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: dns-01
+  writable: ["/etc", "/var", "/home", "/root"]
+
+# an unbroken stand is in the middle of the rollout: three replicas of four already forward external queries to a
+# sibling, and the grader requires every replica to resolve external names on its own
+test: { baseline: fail }

@@ -1,0 +1,60 @@
+version: 2
+slug: no-space-empty-disk
+title: "Нет места на пустом диске"
+summary: "Утренний отчёт упал с «No space left on device», аналитики просят увеличить том базы. Том при этом почти пустой."
+type: "Kubernetes, PostgreSQL, StatefulSet, память контейнера"
+difficulty: MIDDLE
+durationMin: 20
+tags: [kubernetes, postgresql, statefulset, cronjob, memory, postmortem]
+
+contextJson:
+  infra: "Кластер kind, один узел. База продаж sales-db: PostgreSQL 16 в StatefulSet из одного пода, данные на томе data-sales-db-0, настройки в ConfigMap sales-db-config. CronJob revenue-report каждое утро пересобирает материализованное представление reporting.revenue_by_channel, из которого читает дашборд «Выручка по каналам»."
+  services: ["sales-db (StatefulSet)", "revenue-report (CronJob)"]
+  setup: "Ночью ETL кроме обычной порции загрузил историю нового канала продаж, маркетплейса: 300 000 заказов (заявка DATA-731). Релизов базы и отчёта не было, манифесты и конфигурацию никто не менял."
+  time: "Вторник, раннее утро"
+eventsJson:
+  - { t: 0, type: alert, title: "KubeJobFailed: revenue-report", body: "Задание revenue-report завершилось с ошибкой, повторная попытка тоже. Вчера оно прошло." }
+  - { t: 3, type: event, title: "Аналитик", body: "В логе задания No space left on device. Ночью загрузили маркетплейс, диск, видимо, кончился. Увеличьте том базы, пожалуйста." }
+  - { t: 8, type: event, title: "Руководитель аналитики", body: "В 10:00 совещание по каналам продаж, на дашборде должен быть маркетплейс. Убирать его данные из базы нельзя." }
+  - { t: 13, type: event, title: "DBA", body: "Напоминаю про DBA-118: память запросов и параллельное выполнение в sales-db настроены под отчёты, занижать их не согласуем." }
+hintsJson:
+  - level: 1
+    penalty: 0
+    text: "Направление: «No space left on device» не обязательно говорит о томе с данными. Дочитай сообщение об ошибке целиком: в нём названо, что именно не удалось увеличить. Потом посмотри, какие ещё файловые системы есть у контейнера базы."
+  - level: 2
+    penalty: 5
+    text: "Инструмент: kubectl logs упавшего пода задания и kubectl logs sales-db-0 дают полный текст ошибки. kubectl exec sales-db-0 -- df -h показывает все файловые системы контейнера с размерами. EXPLAIN запроса из определения витрины показывает, какой узел плана работает с памятью, общей для нескольких процессов."
+  - level: 3
+    penalty: 15
+    text: "Почти ответ: параллельный hash join строит хеш-таблицу в динамической разделяемой памяти, PostgreSQL берёт её в /dev/shm, а в контейнере это tmpfs на 64 МБ. После ночной загрузки таблица туда не помещается. Добавь в StatefulSet sales-db том emptyDir с medium: Memory и смонтируй его в /dev/shm, дождись перезапуска пода и запусти отчёт заново: kubectl create job <имя> --from=cronjob/revenue-report."
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+sources:
+  - title: "Zalando, 09.11.2020: PostgreSQL на K8s в Zalando: два года в бою"
+    url: "https://habr.com/ru/post/527042"
+
+# the grader requires the night load to be in the database and the dashboard view rebuilt on it;
+# on an unbroken stand the load has not happened yet, so the baseline does not pass
+test: { baseline: fail }
+
+environment:
+  kind: kubernetes
+  image: wom-tools:dev
+  cluster: { nodes: 1 }
+  manifests: ./k8s
+  images: ["postgres:16-alpine"]
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  startup: { expectedSec: 90, note: "Поднимаем базу продаж и загружаем в неё историю заказов." }
+  resources: { cpus: 1, memoryMb: 384, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: bastion
+  writable: ["/home", "/root", "/etc"]

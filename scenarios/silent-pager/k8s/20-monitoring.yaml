@@ -1,0 +1,45 @@
+# Monitoring of the store: evaluates the alert rule inside the cluster and delivers events to the paging provider.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alert-relay
+  namespace: monitoring
+  labels: { app: alert-relay }
+  annotations:
+    platform.shopnet.example/dns-profile: "legacy-dc1: search domain dc1.corp.example for short names of hosts in the old datacenter; timeout:1 since PLAT-2210 (lookups of partner names used to hang for 10 s)"
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: alert-relay }
+  template:
+    metadata:
+      labels: { app: alert-relay }
+    spec:
+      dnsConfig:
+        searches:
+          - dc1.corp.example
+        options:
+          - { name: timeout, value: "1" }
+      containers:
+        - name: alert-relay
+          image: wom-scenario/silent-pager:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: ROLE, value: alert-relay }
+            - { name: SCRAPE_URL, value: "http://10.96.30.20:9090/stats" }
+            - { name: PAGER_URL, value: "http://events.pager.example/v1/enqueue" }
+            - { name: ALERT_FOR_SEC, value: "120" }
+            - { name: CLUSTER_NAME, value: store-prod-1 }
+          ports:
+            - { containerPort: 9090, name: http }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 10m, memory: 24Mi }
+            limits: { memory: 64Mi }

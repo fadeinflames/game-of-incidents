@@ -1,0 +1,57 @@
+version: 2
+slug: restore-comes-up-empty
+title: "В бэкапе тоже пусто"
+summary: "С прода по ошибке удалили заказы за два года. Архив старше удаления, но в копии, развёрнутой из него, этих заказов тоже нет."
+type: "Linux, PostgreSQL, физический бэкап, потоковая репликация, восстановление данных"
+difficulty: MIDDLE
+durationMin: 30
+tags: [linux, postgresql, backup, replication, recovery, database, postmortem]
+
+contextJson:
+  infra: "Один сервер db-01 (Debian 12), PostgreSQL 15, два кластера: 15/main (прод, порт 5432, база shop) и 15/replica (потоковая реплика, порт 5433). Сервис storefront записывает заказы в таблицу orders на проде. Бэкап делает скрипт pg-backup, архив лежит в /srv/backup. Для временных экземпляров из бэкапа отведён каталог /srv/restore, порт 5434."
+  services: ["postgresql (15/main, 15/replica)", "storefront"]
+  setup: "Сегодня инженер готовил тестовый стенд и выполнил очистку таблицы не в том окне терминала: с прода удалены все заказы, созданные до 2026 года. Коллега развернул последний архив по инструкции и удалённых заказов в нём не нашёл."
+  time: "Будний день, рабочие часы"
+eventsJson:
+  - { t: 0, type: alert, title: "Удалены заказы на проде", body: "db-01, база shop: из orders удалено 6200 заказов, созданных до 2026 года. Магазин работает, новые заказы принимаются." }
+  - { t: 3, type: event, title: "Коллега", body: "Развернул последний архив по инструкции из /srv/restore, экземпляр на 5434. Старых заказов там нет, хотя архив снят до удаления. Архив битый? Я на созвоне с бухгалтерией, дальше ты." }
+  - { t: 10, type: event, title: "Бухгалтерия", body: "Без заказов за 2024 и 2025 годы не сходится сверка возвратов. Заказы нужны с прежними номерами и датами." }
+hintsJson:
+  - level: 1
+    penalty: 0
+    text: "Направление: архив старше удаления, а строк в копии нет. Значит, они пропали из копии уже после её запуска. Выясни, что временный экземпляр делал при старте и чем он занят сейчас."
+  - level: 2
+    penalty: 5
+    text: "Инструмент: лог временного экземпляра /srv/restore/restore.log и его процессы (ps -ef | grep postgres). На проде: SELECT application_name, client_addr, state FROM pg_stat_replication; в копии: SELECT pg_is_in_recovery(); Посмотри, какие файлы лежат в корне архива (tar -tzf, ищи signal, auto.conf и backup_label) и что в них написано."
+  - level: 3
+    penalty: 15
+    text: "Почти ответ: архив снят с реплики, поэтому в нём лежат standby.signal и postgresql.auto.conf со строкой primary_conninfo. Экземпляр из такого архива стартует как ещё одна реплика прода и проигрывает тот же DELETE. Останови его, распакуй архив заново, до первого запуска удали standby.signal и строку primary_conninfo, запусти. Выгрузи из копии заказы до 2026 года в файл и загрузи их в orders на проде, не трогая остальные строки. Потом останови временный экземпляр."
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+sources:
+  - title: "Флант, 27.04.2022: Практические истории из наших SRE-будней. Часть 6"
+    url: "https://habr.com/ru/companies/flant/articles/662459/"
+
+environment:
+  kind: container
+  image: wom-scenario/restore-comes-up-empty:dev
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 50
+  startup: { expectedSec: 30, note: "Поднимаем прод и реплику, снимаем бэкап и воспроизводим неудачное восстановление." }
+  resources: { cpus: 1, memoryMb: 256, pids: 384 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: db-01
+  writable: ["/etc", "/var", "/home", "/root", "/srv"]
+
+# the grader requires what production wrote after the backup (the partner batch, the status changes); on an unbroken
+# stand the backup has not been taken yet and those rows do not exist
+test: { baseline: fail }

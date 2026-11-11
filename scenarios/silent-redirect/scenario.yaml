@@ -1,0 +1,56 @@
+version: 2
+slug: silent-redirect
+title: "Тихий редирект"
+summary: "Пользователи жалуются, что вместо сайта своего города попадают на главную. Мониторинг молчит: ошибок 4xx и 5xx нет, nginx -t проходит."
+type: "Linux, nginx, виртуальные хосты, include, мониторинг"
+difficulty: JUNIOR
+durationMin: 15
+tags: [linux, nginx, config, monitoring, postmortem]
+
+contextJson:
+  infra: "Один сервер front-01 (Debian 12): nginx принимает запросы примерно к сорока сайтам сервиса объявлений (главный сайт, сайты городов, служебные хосты) и передаёт их приложениям на этом же сервере, у каждого сайта свой порт."
+  services: ["nginx", "site-backends"]
+  setup: "Около девяти часов назад, в окно работ, конфигурацию nginx разложили из одного большого файла по отдельным файлам (заявка OPS-2107). Тогда же завели новый сайт sale.polka.example. После работ nginx -t прошёл, главная открывалась."
+  time: "Спустя девять часов после окна работ"
+eventsJson:
+  - { t: 0, type: event, title: "Поддержка", body: "Пользователи из Уфы и Воронежа пишут, что вместо сайта своего города попадают на главную. Первые обращения пришли ещё ночью." }
+  - { t: 3, type: event, title: "Мониторинг", body: "Дашборд front-01: 5xx 0 %, 4xx в пределах нормы. Алертов с момента работ не было." }
+  - { t: 7, type: event, title: "Партнёрский отдел", body: "Интеграция партнёра перестала получать данные: вместо ответа API приходит страница главного сайта." }
+hintsJson:
+  - level: 1
+    penalty: 0
+    text: "Направление: жалобы пришли на два сайта, но это не значит, что сломаны два. Выясни, какой блок nginx отвечает на запрос к пострадавшему сайту и откуда берётся редирект. Потом сравни список сайтов до работ и после."
+  - level: 2
+    penalty: 5
+    text: "Инструмент: sudo nginx -T печатает целиком ту конфигурацию, которую nginx читает на самом деле. Выбери из неё строки server_name и сравни с резервной копией /etc/nginx/nginx.conf.before-OPS-2107. Коды ответа по сайтам даёт access.log: awk '{print $8, $4}' /var/log/nginx/access.log | sort | uniq -c"
+  - level: 3
+    penalty: 15
+    text: "Почти ответ: nginx.conf подключает сайты строками include с шаблоном *.conf. Часть файлов в /etc/nginx/sites/regions и /etc/nginx/sites/services получила другие расширения (.conf.new и .cfg). Такие файлы nginx молча не читает, и запросы к этим сайтам попадают в блок по умолчанию с редиректом. Переименуй их в .conf, выполни sudo nginx -t и sudo service nginx reload. Файл с расширением .disabled выключен намеренно, его не трогай."
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+guide: guide.md
+
+sources:
+  - title: "Циан, 30.04.2020: Топ факапов Циан"
+    url: "https://habr.com/ru/post/499542"
+
+environment:
+  kind: container
+  image: wom-scenario/silent-redirect:dev
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  resources: { cpus: 1, memoryMb: 128, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: front-01
+  writable: ["/etc", "/var", "/home", "/root"]
+
+# an unbroken stand is the same change done right: every site file is *.conf, so all 41 sites answer and the grader passes
+test: { baseline: pass }

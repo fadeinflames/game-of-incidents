@@ -1,6 +1,6 @@
 // The Python stand-ins and the Dockerfiles of the images nobody builds in a unit test: what can be checked without Docker.
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,7 +18,7 @@ afterAll(() => {
 const scenarios = readdirSync(path.join(root, "scenarios")).filter((d) => readdirSync(path.join(root, "scenarios", d)).includes("scenario.yaml"));
 const dockerfiles = [
   ...["images/tools", "images/egress-guard"].map((d) => path.join(root, d, "Dockerfile")),
-  ...scenarios.map((s) => path.join(root, "scenarios", s, "image", "Dockerfile")).filter((f) => readdirSync(path.dirname(f)).includes("Dockerfile")),
+  ...scenarios.map((s) => path.join(root, "scenarios", s, "image", "Dockerfile")).filter((f) => existsSync(f)), // a Kubernetes scenario on public images only has no image/ folder
 ];
 
 describe.skipIf(!python)("python syntax of the images", () => {

@@ -1,0 +1,61 @@
+version: 2
+slug: give-way
+title: "Уступите место"
+summary: "Запись метрик через gateway отвечает 503: из трёх боевых ingester'ов работает один, два висят в Pending. Релизов боевого контура не было."
+type: "Kubernetes, планировщик, приоритеты подов, StatefulSet"
+difficulty: MIDDLE
+durationMin: 25
+tags: [kubernetes, scheduler, priority, preemption, statefulset, capacity, postmortem]
+
+contextJson:
+  infra: "Кластер kind: control-plane и одна рабочая нода. Namespace metrics: общий боевой контур сервиса метрик (StatefulSet ingester из трёх реплик, gateway, agents). Namespace metrics-vega: выделенный контур нового клиента. Namespace monitoring: alerting."
+  services: ["gateway", "ingester", "agents", "alerting"]
+  setup: "Вчера команда платформы выкатила изменение PLAT-1182. Сегодня утром коллега завёл выделенный контур для нового клиента. Релизов боевого контура не было."
+  time: "Пятница, 10:20"
+eventsJson:
+  - { t: 0, type: alert, title: "MetricsWriteErrors", body: "Доля успешных записей через gateway за последнюю минуту: 0 %. Агенты клиентов получают 503." }
+  - { t: 3, type: msg, title: "Коллега из онбординга", body: "«Это не из-за меня? Я минут двадцать назад завёл контур для Веги, тикет ONB-311. У меня всё поднялось, оба пода зелёные. Если мешает, могу удалить и пересоздать на следующей неделе.»" }
+  - { t: 8, type: msg, title: "Команда платформы", body: "«Вчера мы выкатили PLAT-1182. На тестовом кластере оно неделю отработало без замечаний. Если подозреваете его, скажите, откатим целиком.»" }
+  - { t: 13, type: event, title: "Поддержка", body: "Клиенты пишут, что их агенты копят очередь и шлют запросы без остановки. На gateway запросов примерно в десять раз больше обычного." }
+hintsJson:
+  - level: 1
+    penalty: 0
+    text: "Направление: боевые ingester'ы не упали сами, их с ноды кто-то убрал. Посмотри события в namespace metrics и сравни нынешние поды с теми, что работали до утра: чем они отличаются с точки зрения планировщика."
+  - level: 2
+    penalty: 5
+    text: "Инструмент: kubectl get events -n metrics --sort-by=.lastTimestamp покажет причину Preempted и UID пода, который вытеснил. kubectl get pods -A -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name,PRIORITY:.spec.priority,CLASS:.spec.priorityClassName,STATUS:.status.phase,UID:.metadata.uid покажет, чей это UID и какой приоритет у каждого пода. kubectl get priorityclass покажет классы и умолчание. Сравни это с шаблоном StatefulSet ingester в metrics."
+  - level: 3
+    penalty: 15
+    text: "Почти ответ: в шаблоне боевого StatefulSet ingester нет priorityClassName. Старые поды жили с приоритетом 0, и их вытеснили поды Веги с умолчанием medium. Новые боевые поды тоже получают medium и подвинуть уже никого не могут. Пропиши в шаблоне priorityClassName: high. Приоритет существующего пода изменить нельзя, поэтому поды должны быть пересозданы: проследи, чтобы новый шаблон получили все три. Контур Веги и классы не трогай: поды Веги уйдут в Pending и дождутся новых нод."
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+sources:
+  - title: "Grafana Labs, 24.07.2019: How a production outage was caused using Kubernetes pod priorities"
+    url: "https://grafana.com/blog/2019/07/24/how-a-production-outage-was-caused-using-kubernetes-pod-priorities/"
+
+# the grader wants the production ingesters to carry an explicit priority class and the dedicated contour to exist;
+# both appear only with break.sh, so the unbroken stand must NOT pass
+test: { baseline: fail }
+
+environment:
+  kind: kubernetes
+  image: wom-tools:dev
+  cluster: { nodes: 2 }
+  manifests: ./k8s
+  images: ["wom-scenario/give-way:dev"]
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  startup: { expectedSec: 90, note: "Стенд из двух нод: control-plane и одна рабочая. После подъёма кластера ещё секунд двадцать уходит на события, которые привели к аварии." }
+  resources: { cpus: 1, memoryMb: 384, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: bastion
+  writable: ["/home", "/root", "/etc"]

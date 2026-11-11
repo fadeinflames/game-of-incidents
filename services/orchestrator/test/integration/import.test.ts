@@ -26,6 +26,7 @@ function record(over: Partial<ImportRecord> = {}): ImportRecord {
     briefMd: null,
     debriefMd: null,
     guideMd: null,
+    sourcesJson: [],
     environmentJson: null,
     breakScript: null,
     graderScript: null,
@@ -49,6 +50,16 @@ describe.skipIf(!hasDb)("upsertImportRecord (integration)", () => {
     const second = await prisma.scenario.findUnique({ where: { slug: SLUG } });
     expect(second!.environmentJson).toBeNull();
     expect(second!.gmScriptJson).toBeNull();
+  });
+
+  it("the postmortem links are stored, and a re-import without them clears them", async () => {
+    const sources = [{ title: "Cloudflare, 18.11.2025", url: "https://blog.cloudflare.com/18-november-2025-outage/" }];
+    await upsertImportRecord(prisma, record({ sourcesJson: sources }), { isPublished: false });
+    const first = await prisma.scenario.findUnique({ where: { slug: SLUG } });
+    expect(first!.sourcesJson).toEqual(sources);
+    await upsertImportRecord(prisma, record(), { isPublished: false });
+    const second = await prisma.scenario.findUnique({ where: { slug: SLUG } });
+    expect(second!.sourcesJson).toEqual([]);
   });
 
   it("the source is recorded when given and survives an import that does not give it", async () => {

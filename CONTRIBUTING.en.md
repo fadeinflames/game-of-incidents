@@ -44,7 +44,8 @@ CI checks pull requests in the same spirit but without a database; `make verify`
 A scenario is a folder `scenarios/<slug>/`: `scenario.yaml`, `brief.md`, `debrief.md`, `image/Dockerfile` (or `k8s/`), `break.sh`, `check.sh`, `solve.sh`. Format: [ADR-0005](docs/adr/0005-scenario-format-v2.md); example: `scenarios/nginx-502-upstream`. Rules:
 
 - the grader checks the **state of the system**, not the way it was fixed;
-- no real companies, people, addresses or secrets; passwords of the training stand are fictional;
+- no real companies, people, addresses or secrets inside the stand or the brief; passwords of the training stand are fictional;
+- if the scenario retells a public postmortem, link it in `sources` in `scenario.yaml` (the platform shows the link under the debrief once the session is over); write the scenario texts in your own words, do not copy the original;
 - the author of a scenario is credited in `NOTICE` (and in the debrief if you like); by submitting a scenario you agree to CC BY 4.0, and Apache-2.0 for its scripts;
 - `wom scenario lint` and `wom scenario test` pass.
 

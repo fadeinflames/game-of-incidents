@@ -1,0 +1,38 @@
+# Template of one replica of the internal DNS cluster. Rendered by /opt/dns-provision/provision.
+# Placeholders are written in double curly braces: NAME is the replica name, ADDR its address, FORWARDERS the forward
+# zones, when the options of the renderer ask for them.
+server:
+    interface: {{ADDR}}
+    port: 53
+    # the replica talks to the outside from its own address: the border firewall lets these four through
+    outgoing-interface: {{ADDR}}
+    access-control: 127.0.0.0/8 allow
+    do-ip6: no
+    # this stand keeps the "Internet" on loopback too
+    do-not-query-localhost: no
+    username: "unbound"
+    chroot: ""
+    directory: "/etc/dns-cluster"
+    pidfile: ""
+    use-syslog: no
+    logfile: ""
+    log-time-ascii: yes
+    log-servfail: yes
+    verbosity: 1
+    num-threads: 1
+    outgoing-range: 128
+    num-queries-per-thread: 64
+    msg-cache-size: 4m
+    rrset-cache-size: 4m
+    module-config: "iterator"
+    # recursion starts from the root servers
+    root-hints: "/etc/dns-cluster/root.hints"
+    # the authoritative part: internal names, the same file on every replica
+    include: "/etc/dns-cluster/internal.zone.conf"
+
+remote-control:
+    control-enable: yes
+    control-interface: "/run/dns-cluster/{{NAME}}.ctl"
+    control-use-cert: no
+
+{{FORWARDERS}}

@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+"""First boot of the stand: the history that comes with the image is moved so that it ends a few minutes ago,
+and the snapshots in /var/backups/redis get the names and dates of the last three six-hourly backups."""
+import os
+import sqlite3
+import time
+
+now = int(time.time())
+for path, tables in (("/var/lib/billing/billing.db", ("ledger",)), ("/var/lib/cardproc/cardproc.db", ("charges", "refunds"))):
+    db = sqlite3.connect(path, timeout=10)
+    row = db.execute("SELECT value FROM meta WHERE key = 'seed_epoch'").fetchone()
+    if row:
+        shift = now - int(row[0])
+        for table in tables:
+            db.execute("UPDATE %s SET ts = strftime('%%Y-%%m-%%dT%%H:%%M:%%SZ', ts, '%+d seconds')" % (table, shift))
+        db.execute("DELETE FROM meta WHERE key = 'seed_epoch'")
+        db.commit()
+    db.close()
+
+backups = "/var/backups/redis"
+for slot, hours in ((1, 18), (2, 12), (3, 6)):
+    src = os.path.join(backups, "balances-slot%d.rdb" % slot)
+    if os.path.exists(src):
+        taken = now - hours * 3600
+        dst = os.path.join(backups, "balances-%s.rdb" % time.strftime("%Y%m%d-%H%M", time.gmtime(taken)))
+        os.rename(src, dst)
+        os.utime(dst, (taken, taken))

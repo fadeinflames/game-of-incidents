@@ -1,0 +1,2 @@
+# Static pins, hosts(5) format: address, then names. Consulted before DNS.
+# Emergency use only: a pinned address goes stale silently. Remove the pin when DNS is back.

@@ -37,6 +37,8 @@ type Props = {
   /** text of the hints this session already opened, so they survive a reload (also after the session is over) */
   openedHints: Record<number, string>;
   debrief: Doc | null;
+  /** public postmortems the scenario is based on; empty until the session is over (they name the cause) */
+  sources: { title: string; url: string }[];
   /** the time the server rendered the page at: the first render of every clock, so the browser's markup matches the server's */
   serverNow: number;
   wsBase: string;
@@ -308,7 +310,7 @@ function HintsPanel({
   );
 }
 
-export function SessionView({ initial, scenario, openedHints, debrief, serverNow, wsBase, contactUrl }: Props) {
+export function SessionView({ initial, scenario, openedHints, debrief, sources, serverNow, wsBase, contactUrl }: Props) {
   const router = useRouter();
   const [session, setSession] = useState<PlayerSession>(initial);
   const [result, setResult] = useState<GraderResult | null>(initial.result);
@@ -708,6 +710,20 @@ export function SessionView({ initial, scenario, openedHints, debrief, serverNow
             // the session is over: the debrief takes the terminal's place
             <section ref={setEndPanel} tabIndex={-1} aria-label="Разбор" className="panel min-h-0 flex-1 overflow-y-auto p-4 text-sm">
               <CollapsibleDoc doc={debrief} testId="debrief" />
+              {sources.length > 0 && (
+                <div className="mt-4 border-t border-[var(--border)] pt-3 text-xs" style={{ color: "var(--muted)" }} data-testid="sources">
+                  <p className="mb-1">По мотивам реального инцидента. Тексты сценария наши, оригинальный разбор:</p>
+                  <ul className="list-disc space-y-0.5 pl-5">
+                    {sources.map((s) => (
+                      <li key={s.url}>
+                        <a href={s.url} target="_blank" rel="noopener noreferrer nofollow" className="underline" style={{ color: "var(--accent)" }}>
+                          {s.title}
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </section>
           ) : (
             <div ref={setEndPanel} tabIndex={-1} className="panel flex flex-1 items-center justify-center text-sm" style={{ color: "var(--muted)" }}>

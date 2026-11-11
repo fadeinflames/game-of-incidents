@@ -1,0 +1,57 @@
+version: 2
+slug: recharge-loop
+title: "Автопополнение по кругу"
+summary: "Биллинг раз за разом списывает деньги с карт клиентов, а баланс в личном кабинете у них остаётся нулевым. Списания идут прямо сейчас."
+type: "Linux, Redis, репликация и персистентность, биллинг, порядок действий при инциденте"
+difficulty: MIDDLE
+durationMin: 30
+tags: [linux, redis, replication, persistence, billing, postmortem]
+
+contextJson:
+  infra: "Один сервер billing-01 (Debian 12). Текущие балансы клиентов живут в Redis: основной узел redis-balances (порт 6379) и две реплики (6380, 6381). Воркер billing-worker тарифицирует сообщения и звонки, списывает их с баланса и при автопополнении берёт деньги с карты через процессинг cardproc. Каждая операция параллельно записывается в журнал проводок в SQLite."
+  services: ["redis-balances", "redis-balances-r1", "redis-balances-r2", "billing-worker", "cardproc"]
+  setup: "Ночью реплики теряли связь с основным узлом. Пока они переподключались, основной узел отвечал с задержками, и предыдущая смена его перезапустила. Задержки пропали. Релизов биллинга не было."
+  time: "Ночь, идёт международный трафик"
+eventsJson:
+  - { t: 0, type: alert, title: "CardChargeRate: 30+ списаний в минуту", body: "Обычно автопополнение срабатывает несколько раз в сутки. Сейчас процессинг получает от нас списание каждые две секунды." }
+  - { t: 4, type: event, title: "Поддержка", body: "Клиент пишет: с карты пять раз подряд сняли по 20 долларов, а баланс в кабинете ноль. Таких обращений уже несколько. Ночью помог перезапуск Redis, может, перезапустить ещё раз?" }
+  - { t: 9, type: event, title: "Финансы", body: "Сколько уже списано лишнего? Вручную разберём не больше 400 возвратов. Балансы сверяем по журналу проводок, не по Redis." }
+hintsJson:
+  - level: 1
+    penalty: 0
+    text: "Направление: деньги уходят каждую секунду, поэтому сначала останови то, что списывает, и только потом выясняй причину. Затем посмотри, что воркер читает из хранилища балансов и что получает в ответ на запись. Ничего не перезапускай и не сохраняй, пока не понял, какие данные ещё целы."
+  - level: 2
+    penalty: 5
+    text: "Инструмент: /var/log/billing-worker/worker.log показывает, какой баланс видит воркер и чем кончается запись. Дальше redis-cli -p 6379: DBSIZE, INFO replication, INFO persistence, INFO server (строка config_file). Сравни с репликой: redis-cli -p 6380. В /var/log/redis-balances/redis.log сравни два последних запуска: что загрузил узел при первом и что при втором."
+  - level: 3
+    penalty: 15
+    text: "Почти ответ: основной узел перезапущен с файлом, отрисованным по шаблону реплики. Из-за appendonly yes он загрузил пустой AOF вместо dump.rdb, из-за replicaof 127.0.0.1 6379 он реплика самого себя и запись запрещена. Останови billing-worker. Прежняя версия файла лежит в /var/backups/cfgsync/redis/: верни её в /etc/redis/balances.conf и перезапусти redis-balances. Ошибочные списания (в логе воркера они помечены словами not credited) оформи через billing-refund. Балансы восстанови из журнала: SET balance:<счёт> = SUM(amount_cents) по таблице ledger. Потом запусти воркер."
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+sources:
+  - title: "Twilio, 18.07.2013: Billing Incident Post-Mortem: Breakdown, Analysis and Root Cause"
+    url: "https://www.twilio.com/blog/2013/07/billing-incident-post-mortem-breakdown-analysis-and-root-cause.html"
+
+environment:
+  kind: container
+  image: wom-scenario/recharge-loop:dev
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 50
+  startup: { expectedSec: 40, note: "Поднимаем три узла Redis и ждём первых повторных списаний." }
+  resources: { cpus: 1, memoryMb: 128, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: billing-01
+  writable: ["/etc", "/var", "/home", "/root"]
+
+# on an unbroken stand everything the grader asks for already holds: the balances match the ledger, the primary is a
+# writable master whose data survives a restart, the replicas follow it, the worker runs, and no charge needs a refund
+test: { baseline: pass }

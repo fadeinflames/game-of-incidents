@@ -1,0 +1,56 @@
+version: 2
+slug: feature-file-doubled
+title: "Файл вырос вдвое"
+summary: "Граница отдаёт 502 волнами с ровным периодом: полминуты всё хорошо, полминуты всё лежит. В поддержке уверены, что это атака."
+type: "Linux, PostgreSQL, генерация конфигурации, права доступа, каскадный отказ"
+difficulty: MIDDLE
+durationMin: 30
+tags: [linux, postgresql, nginx, config, cascade, postmortem]
+
+contextJson:
+  infra: "Один сервер edge-01 (Debian 12): nginx принимает запросы и отдаёт их воркеру edge-proxy, который оценивает каждый запрос модулем защиты от ботов. Набор признаков для модуля раз в 20 секунд собирает сервис featuregen из метаданных кластера аналитики (PostgreSQL, два узла n1 и n2)."
+  services: ["nginx", "edge-proxy", "featuregen", "access-rollout", "postgresql"]
+  setup: "Сегодня команда безопасности начала плановое изменение доступа в кластере аналитики (заявка SEC-2291): сервисным учёткам выдаются явные права. Релизов edge-proxy и featuregen сегодня не было."
+  time: "Вторник, день, пик трафика"
+eventsJson:
+  - { t: 0, type: alert, title: "Edge5xxRate > 30 %", body: "Доля ответов 502 на границе скачет от 0 до 100 % и обратно." }
+  - { t: 4, type: event, title: "Поддержка", body: "Клиенты пишут, что сайт то открывается, то нет. Запросов в логах стало в разы больше. Нас атакуют? Может, заблокировать самых активных?" }
+  - { t: 9, type: event, title: "Команда безопасности", body: "SEC-2291 идёт по плану, первый узел уже переведён, второй будет через несколько минут. Изменение обязательно по аудиту, откат не согласуем." }
+hintsJson:
+  - level: 1
+    penalty: 0
+    text: "Направление: сбои идут волнами с ровным периодом. Найди сервис, который работает с тем же периодом, и сравни, что он делает в хорошую волну и в плохую."
+  - level: 2
+    penalty: 5
+    text: "Инструмент: /var/log/edge-proxy/proxy.log говорит, почему падает воркер, /var/log/featuregen/featuregen.log показывает разницу между соседними циклами. Сравни права на таблицы схемы shard0 на двух узлах: sudo -u postgres psql -d analytics_n1 и то же для analytics_n2."
+  - level: 3
+    penalty: 15
+    text: "Почти ответ: запрос в /etc/featuregen/query.sql ищет столбцы по имени таблицы и не называет схему. После выдачи прав на shard0 на узле n1 ему видны две таблицы request_features, признаков выходит 240, а таблица воркера рассчитана на 200. Добавь условие на схему dist. Пока чинишь, останови генератор и верни воркеру последний хороший файл из каталога archive."
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+sources:
+  - title: "Cloudflare, 18.11.2025: Cloudflare outage on November 18, 2025"
+    url: "https://blog.cloudflare.com/18-november-2025-outage/"
+
+environment:
+  kind: container
+  image: wom-scenario/feature-file-doubled:dev
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 50
+  startup: { expectedSec: 60, note: "Поднимаем кластер аналитики и ждём первого сбоя на границе." }
+  resources: { cpus: 1, memoryMb: 384, pids: 384 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: edge-01
+  writable: ["/etc", "/var", "/home", "/root"]
+
+# the grader requires the access change to be in place, and on an unbroken stand it has not started yet
+test: { baseline: fail }

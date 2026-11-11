@@ -69,7 +69,8 @@
           "breakScript": { "type": ["string", "null"], "description": "SECRET: POSIX sh, run as root over stdin after the sandbox starts" },
           "graderScript": { "type": ["string", "null"], "description": "SECRET: POSIX sh, prints {passed, criteria[]} JSON" },
           "solutionScript": { "type": ["string", "null"], "description": "SECRET: reference solution for regression tests and the debrief" },
-          "guideMd": { "type": ["string", "null"], "description": "teaching scenarios: markdown split by `## ` headings into stages the player reveals one by one" }
+          "guideMd": { "type": ["string", "null"], "description": "teaching scenarios: markdown split by `## ` headings into stages the player reveals one by one" },
+          "sourcesJson": { "type": "array", "description": "public postmortems the scenario is based on; shown as links under the debrief", "maxItems": 5, "items": { "type": "object", "required": ["title", "url"], "additionalProperties": false, "properties": { "title": { "type": "string", "minLength": 3, "maxLength": 200 }, "url": { "type": "string", "maxLength": 500, "pattern": "^https:\\/\\/[A-Za-z0-9.-]+(?::\\d{1,5})?(?:\\/[^\\s<>\"'`\\\\]*)?$" } } } }
         }
       }
     }

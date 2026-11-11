@@ -1,0 +1,59 @@
+version: 2
+slug: not-a-single-pod
+title: "Ни одного пода"
+summary: "После планового обслуживания ноды витрина stage не поднялась: Deployment storefront показывает 0 из 3, а в namespace нет ни одного пода, даже в Pending."
+type: "Kubernetes, Deployment и ReplicaSet, admission, обслуживание кластера"
+difficulty: MIDDLE
+durationMin: 20
+tags: [kubernetes, deployment, replicaset, admission, maintenance, postmortem]
+
+contextJson:
+  infra: "Stage-кластер kind из одной ноды: namespace shop (Deployment storefront, 3 реплики), billing (invoicer, 2 реплики), tools (status-page, 1 реплика)"
+  services: ["storefront", "invoicer", "status-page"]
+  setup: "В понедельник в shop и billing ввели ResourceQuota на число подов (PLAT-1869). Во вторник со stage удалили Istio (PLAT-1873). Сегодня утром по плану обслуживали ноду: drain, обновление, uncordon (PLAT-1880). Релизов приложений на этой неделе не было."
+  time: "Среда, 08:40"
+eventsJson:
+  - { t: 0, type: alert, title: "KubeDeploymentReplicasMismatch: shop/storefront", body: "У Deployment storefront доступно 0 реплик из 3 дольше 15 минут." }
+  - { t: 3, type: msg, title: "Утренняя смена", body: "«Ноду обслужили по PLAT-1880: drain, обновление, uncordon. Нода Ready, системные поды поднялись. Прикладные не смотрели, сдаю смену.»" }
+  - { t: 8, type: event, title: "QA", body: "Витрина stage не открывается, прогон тестов стоит. Перезапуск джобы деплоя ничего не дал: джоба зелёная, подов нет." }
+hintsJson:
+  - level: 1
+    penalty: 0
+    text: "Направление: пода нет вообще, поэтому спрашивать нужно не у пода и не у планировщика, а у того, кто поды создаёт. Пройди по цепочке Deployment → ReplicaSet и прочитай, что контроллер пишет о своих попытках."
+  - level: 2
+    penalty: 5
+    text: "Инструмент: kubectl -n shop describe rs (секция Events) или kubectl -n shop get events --sort-by=.lastTimestamp. В тексте события FailedCreate названо, кто отклонил создание пода и к чему он не смог обратиться. Найди этот объект и прочитай его целиком (-o yaml): куда он ходит, какие namespace выбирает и что делает, когда ему не ответили."
+  - level: 3
+    penalty: 15
+    text: "Почти ответ: от удалённого Istio остался MutatingWebhookConfiguration istio-sidecar-injector с failurePolicy Fail. Он выбирает namespace с меткой istio-injection=enabled (это shop и billing) и ходит в Service istiod, у которого нет порта 443. Удали его: kubectl delete mutatingwebhookconfiguration istio-sidecar-injector. ReplicaSet после серии неудач повторяет попытки всё реже, поэтому подтолкни оба Deployment: kubectl -n shop rollout restart deploy/storefront и kubectl -n billing rollout restart deploy/invoicer."
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+sources:
+  - title: "Флант, 27.04.2022: Практические истории из наших SRE-будней. Часть 6"
+    url: "https://habr.com/ru/companies/flant/articles/662459/"
+
+# before the break the applications are whole, a new pod is admitted and no webhook exists: the grader must pass
+test: { baseline: pass }
+
+environment:
+  kind: kubernetes
+  image: wom-tools:dev
+  cluster: { nodes: 1 }
+  manifests: ./k8s
+  images: ["wom-scenario/not-a-single-pod:dev"]
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  startup: { expectedSec: 90 }
+  resources: { cpus: 1, memoryMb: 384, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: bastion
+  writable: ["/home", "/root", "/etc"]

@@ -1,0 +1,17 @@
+dns-provision: builds the configuration of the replicas of the internal DNS cluster.
+
+  inventory            the replicas: name and address
+  unbound.conf.tmpl    template of a replica's unbound.conf
+  rebuild.conf         settings of the rebuild job
+
+A replica is never edited by hand. It is rebuilt in place: the old instance is stopped, its directory is wiped,
+a fresh configuration is rendered and a new instance is started and checked.
+
+  sudo dns-rebuild ns1              rebuild replica ns1
+  sudo dns-rebuild --dry-run ns1    print what a rebuild would render, touch nothing
+  /opt/dns-provision/provision --help    options of the renderer
+
+Rendered configurations: /etc/dns-cluster/<replica>/unbound.conf
+Shared by all replicas:  /etc/dns-cluster/internal.zone.conf (internal names), /etc/dns-cluster/root.hints
+Services:                dns-ns1 .. dns-ns4, logs in /var/log/dns-<replica>/
+Log of the rebuilds:     /var/log/dns-rebuild/rebuild.log

@@ -43,6 +43,7 @@ const card = (over: Partial<ScenarioCard>): ScenarioCard => ({
   durationMin: 20,
   tags: ["nginx", "nginx"],
   kind: "container",
+  origin: "authored",
   startupSec: null,
   progress: null,
   ...over,
