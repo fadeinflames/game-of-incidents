@@ -1,0 +1,58 @@
+version: 2
+slug: redial-storm
+title: "Две секунды обслуживания"
+summary: "Сервис уведомлений не может достучаться до своего хранилища, очередь заданий растёт. Сетевой шлюз между сегментами перезапускали на пару секунд, он сразу поднялся, а связь через него так и не вернулась."
+type: "Linux, haproxy (TCP), Redis, повторные подключения, общая сетевая точка"
+difficulty: MIDDLE
+durationMin: 25
+tags: [linux, haproxy, redis, tcp, retries, gateway, postmortem]
+
+contextJson:
+  infra: "Один сервер app-01 (Debian 12). Сегмент приложений и сегмент данных связывает шлюз seg-gw (haproxy в режиме TCP, порт 6380). Через него восемь процессов runner-1 … runner-8 берут задания из очереди queue-redis, а сервис notifier раз в две секунды ходит в своё хранилище notify-redis. Задания в очередь ставит scheduler, он стоит в сегменте данных рядом с очередью."
+  services: ["seg-gw", "queue-redis", "notify-redis", "scheduler", "notifier", "runner-1 … runner-8"]
+  setup: "Несколько минут назад сетевая команда провела плановые работы на шлюзе: перезапуск, около двух секунд простоя. Шлюз поднялся, его конфигурация не менялась. Релизов сегодня не было."
+  time: "Четверг, 15:10"
+eventsJson:
+  - { t: 0, type: alert, title: "NotifierStoreUnreachable", body: "notifier не может подключиться к своему хранилищу notify-redis. Уведомления пользователям не уходят и копятся в памяти сервиса." }
+  - { t: 3, type: alert, title: "ReportQueueBacklog", body: "Очередь jobs:pending растёт: задания поступают быстрее, чем выполняются." }
+  - { t: 7, type: event, title: "Сетевая команда", body: "Работы на seg-gw закончены, шлюз запущен, оба Redis с него видны. Конфигурацию не трогали. Лимиты шлюза общие для всех сегментов, без заявки и согласования мы их не меняем. Можем перезапустить шлюз ещё раз, если это поможет." }
+  - { t: 12, type: event, title: "Владелец notifier", body: "У нас ничего не менялось, клиент к хранилищу вежливый: одно короткое соединение раз в две секунды, после ошибки паузы растут. До работ на шлюзе всё ходило. Почему мы до сих пор не можем подключиться?" }
+hintsJson:
+  - level: 1
+    penalty: 0
+    text: "Направление: notifier здесь пострадавший, а не виновник. Его хранилище живо, не отвечает путь к нему. Посмотри, чем занят шлюз прямо сейчас: кто к нему подключается, как часто и чем заканчиваются эти подключения."
+  - level: 2
+    penalty: 5
+    text: "Инструмент: ss -ltn покажет очередь на порту 6380 (колонки Recv-Q и Send-Q), nstat -az TcpExtListenOverflows TcpExtListenDrops покажет, растёт ли число отброшенных подключений. Статистика шлюза: echo 'show stat' | sudo socat stdio /run/haproxy/admin.sock (колонки rate и rate_lim у seg-a) и лог /var/log/seg-gw/haproxy.log: в каждой строке адрес назначения и число переданных байт. Кто открывает соединения с очередью: redis-cli -h 127.0.30.11 info stats (total_connections_received) и client list. Дальше логи /var/log/runner-N/runner.log и настройки /etc/runner/runner.conf."
+  - level: 3
+    penalty: 15
+    text: "Почти ответ: после перезапуска шлюза все runner'ы разом открывают по 8 соединений, а шлюз принимает 16 новых в секунду. Попытка ждёт в очереди шлюза дольше секунды, runner её бросает, рвёт весь свой пул и без паузы начинает заново. Брошенные попытки шлюз всё равно обрабатывает, и они съедают весь его лимит: живые попытки не проходят ни у runner'ов, ни у notifier. Лимит чужой, чинить нужно клиента: в /etc/runner/runner.conf задай паузу между попытками с ростом и случайной долей (например redial_pause_ms = 1000, redial_backoff = 2, redial_jitter = 0.5) и примени: sudo service runner-N reload для каждого runner'а."
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+sources:
+  - title: "GitHub, 30.10.2026: Incident with Actions, Pages, and Webhooks"
+    url: "https://www.githubstatus.com/incidents/pwxsjgnvrk6b"
+
+environment:
+  kind: container
+  image: wom-scenario/redial-storm:dev
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  startup: { expectedSec: 45, note: "Запускаем шлюз, два Redis и восемь runner'ов по очереди, затем проводим работы на шлюзе." }
+  resources: { cpus: 1, memoryMb: 256, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: app-01
+  writable: ["/etc", "/var", "/home", "/root"]
+
+# the grader repeats the gateway maintenance itself: an unbroken stand has the same client settings and does not
+# survive it either
+test: { baseline: fail }

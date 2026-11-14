@@ -1,0 +1,6 @@
+# Namespace "access-api", served by settingsd.
+# After a change: service settingsd reload. The API reads its namespace at start.
+
+[cache]
+# lifetime of an access status the API computes itself, seconds
+status_ttl_sec = 21600

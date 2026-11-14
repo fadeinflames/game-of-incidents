@@ -1,0 +1,20 @@
+budget-worker: changes
+
+2.8.0
+  - BUD-412. A usage record can reach the worker long after the gateway wrote it, and it carries the budget state the
+    gateway measured at that moment. New setting access.discard_state_before_reset (namespace budget-worker in
+    settingsd, default false): when it is true, the worker still posts the usage of such a record but ignores a state
+    measured before the last monthly reset. To be switched on ahead of the next reset.
+  - The settings of the worker are printed at start and whenever a value changes.
+
+2.7.3
+  - A limit change logs how long it waited in the queue.
+  - Every minute the worker logs the length of the queue and the age of its oldest event.
+
+2.7.0
+  - An event stays in queue:budget-updates:processing while it is applied; after a crash it goes back to the head of
+    the queue. Usage records and limit changes are applied once: the record number is the key.
+  - [overrides] in /etc/budget-worker/worker.conf: local values that win over settingsd.
+
+2.6.0
+  - Settings moved from the local file to settingsd.

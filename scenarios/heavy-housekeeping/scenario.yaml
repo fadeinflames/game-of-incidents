@@ -1,0 +1,57 @@
+version: 2
+slug: heavy-housekeeping
+title: "Слияния подождут"
+summary: "Тестовые merge-коммиты для запросов на слияние создаются с опозданием на минуту и больше, пайплайны стартуют поздно. Запросы не теряются: очередь растёт, потом разбирается пачкой и растёт снова."
+type: "Linux, git, сервер хранения репозиториев, память сервера, фоновые задачи"
+difficulty: MIDDLE
+durationMin: 25
+tags: [linux, git, memory, cgroups, background-jobs, cron, postmortem]
+
+contextJson:
+  infra: "Один сервер хранения git-03 (Debian 12, 1 CPU, 640 МБ памяти). Bare-репозитории лежат в /var/lib/git. Сервис gitstored (порт 8075) выполняет git-операции по запросам других сервисов. Очередь mergeq создаёт через него тестовый merge-коммит для каждого запроса на слияние: с этого коммита стартует CI. Раз в минуту cron запускает плановое обслуживание репозиториев git-housekeeping."
+  services: ["gitstored", "mergeq", "cron (git-housekeeping)", "loadgen (разработчики)"]
+  setup: "Релизов и изменений настроек на сервере сегодня не было. Студия сегодня закончила перенос архива исходников графики в репозиторий studio/assets.git."
+  time: "Будний день, 16:20"
+eventsJson:
+  - { t: 0, type: alert, title: "MergeCommitDelay: p95 > 60 с", body: "git-03: тестовые merge-коммиты запросов на слияние создаются с опозданием. Очередь mergeq растёт, потом разбирается пачкой и растёт снова." }
+  - { t: 4, type: event, title: "Команда CI", body: "Пайплайны по запросам на слияние стартуют на минуту-две позже обычного, раннеры при этом простаивают. Задержка до нас, а не у нас. Может, перезапустить mergeq?" }
+  - { t: 9, type: event, title: "Команда хранения", body: "git-03 последний сервер старого поколения. Его репозитории больше нигде не лежат, поэтому вывести его из работы нельзя, и добавить ему ресурсов тоже. Настройки gitstored одинаковы на всех серверах, на одном их не меняем." }
+hintsJson:
+  - level: 1
+    penalty: 0
+    text: "Направление: mergeq ничего не теряет и сам не тормозит. Прочитай, что он пишет о сервисе, от которого зависит, и что этот сервис пишет о себе. Потом выясни, кто завершает его рабочий процесс: это не человек и не сам сервис."
+  - level: 2
+    penalty: 5
+    text: "Инструмент: /var/log/mergeq/mergeq.log и /var/log/gitstored/gitstored.log. Сервер живёт в контейнере: dmesg недоступен, free показывает память хоста. Счётчики самого сервера: /sys/fs/cgroup/memory.max, memory.current и строка oom_kill в memory.events. Кто занимает память: ps -eo pid,user,rss,etime,args --sort=-rss | head, повторяй раз в несколько секунд в течение пары минут. Сопоставь время записей в логе gitstored с /var/log/git-housekeeping/housekeeping.log."
+  - level: 3
+    penalty: 15
+    text: "Почти ответ: плановое обслуживание studio/assets.git (git repack -a -d -f) пакует в четыре потока без ограничения памяти и занимает сотни мегабайт. Память сервера кончается, и ядро убивает самый большой процесс: рабочий процесс gitstored. Ограничь память упаковки настройками git, например sudo git config --system pack.windowMemory 16m и sudo git config --system pack.threads 2. Останови запуск, который идёт со старыми настройками (sudo pkill -u git -f pack-objects), перезапусти gitstored и доведи обслуживание до конца: sudo -u git git-housekeeping --force studio/assets.git. Обслуживание не отключай и репозиторий из него не исключай."
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+sources:
+  - title: "GitHub, 20.09.2026: Incident with Pull Requests"
+    url: "https://www.githubstatus.com/incidents/f6yrxnz5f7bs"
+
+environment:
+  kind: container
+  image: wom-scenario/heavy-housekeeping:dev
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  startup: { expectedSec: 45, note: "Сервер работает в штатном режиме, пока не проявится задержка." }
+  resources: { cpus: 1, memoryMb: 640, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: git-03
+  writable: ["/etc", "/var", "/home", "/root"]
+
+# the grader requires the 60 files of the studio's archive in studio/assets.git; the unbroken stand has only the first
+# four, the other 56 are pushed by break.sh. Everything else the grader asks for holds on the unbroken stand.
+test: { baseline: fail }

@@ -1,0 +1,61 @@
+version: 2
+slug: below-the-baseline
+title: "Ниже минимума"
+summary: "Каждое третье задание не успевает стартовать за 20 секунд, остальные ждут почти до таймаута, очередь не убывает. Поды dispatcher все в Ready, перезапусков и ошибок в логах нет."
+type: "Kubernetes, автомасштабирование, очередь заданий, откат конфигурации"
+difficulty: MIDDLE
+durationMin: 25
+tags: [kubernetes, autoscaling, capacity, queue, configuration, rollback, postmortem]
+
+contextJson:
+  infra: "Кластер kind из одной ноды. Namespace runs: сервис запуска заданий (submitter изображает клиентов, queue держит очередь в памяти, поды dispatcher забирают задания и запускают их). Namespace platform: capacity-controller команды платформы управляет числом подов dispatcher по плану мощностей."
+  services: ["submitter", "queue", "dispatcher", "capacity-controller"]
+  setup: "Утром выкатили dispatcher 4.12 (новый формат лога). Днём команда платформы применила к capacity-controller изменение CAP-733: добавлять поды раньше, когда растёт очередь."
+  time: "Четверг, 14:20"
+eventsJson:
+  - { t: 0, type: alert, title: "JobStartFailures", body: "runs: задания не стартуют за 20 секунд, очередь растёт. Поды queue и dispatcher в Ready, перезапусков нет." }
+  - { t: 3, type: msg, title: "Дежурный команды запуска", body: "«У dispatcher всё зелёное: рестартов нет, в логах ни одной ошибки. Может, им не хватает CPU? Давай поднимем лимиты.»" }
+  - { t: 8, type: msg, title: "Поддержка", body: "«Клиенты жалуются: каждое третье задание падает с not started, остальные ждут почти до таймаута. Может, очистить очередь, чтобы новые задания пошли сразу?»" }
+  - { t: 13, type: msg, title: "Команда платформы", body: "«В CAP-733 менялась одна строка: порог очереди, после которого добавляется под, 20 → 15. От этого подов может стать только больше. Если контроллер мешает, скажите, выключим его на время.»" }
+hintsJson:
+  - level: 1
+    penalty: 0
+    text: "Направление: поды dispatcher здоровы, поэтому смотри не на их состояние, а на арифметику. Сколько заданий в секунду приходит в очередь, сколько запускает один под и сколько подов сейчас работает? Потом выясни, кто решил, что подов должно быть столько, и попробуй с ним поспорить."
+  - level: 2
+    penalty: 5
+    text: "Инструмент: kubectl -n runs exec deploy/queue -- stats покажет поток и очередь. kubectl -n runs scale deploy dispatcher --replicas=8 и следом kubectl -n runs get events --sort-by=.lastTimestamp покажут, кто возвращает число подов. Дальше kubectl -n platform logs deploy/capacity-controller --tail=20, kubectl -n platform exec deploy/capacity-controller -- stats и kubectl -n platform get configmap: посмотри, откуда контроллер берёт границы и что о происхождении этих чисел написано в самом объекте."
+  - level: 3
+    penalty: 15
+    text: "Почти ответ: план в ConfigMap capacity-plan (ревизия 42) сгенерирован в феврале и несёт границы пула того времени, 2..4 пода, а потоку в 6 заданий в секунду нужно 8. Контроллер хранит применённые планы в ConfigMap capacity-plan-history: ревизия rev-0041 с границами 8..12 построена по октябрьским данным. Верни её содержимое в ключ plan.conf объекта capacity-plan (или исправь в нём min_replicas и max_replicas на 8 и 12). Ручной kubectl scale контроллер откатит, останавливать контроллер и чистить очередь нельзя. После правки подожди две-три минуты: очередь должна разобраться, а минутное окно статистики очиститься."
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+sources:
+  - title: "GitHub, 13.07.2026: Actions runs are experiencing failures to start"
+    url: "https://www.githubstatus.com/incidents/q27ttsnp0x4g"
+
+# the grader reads the last minute of the queue statistics and wants at least 300 jobs received and started in it:
+# right after the manifests are applied that minute is empty. An unbroken stand that has run for a minute passes.
+test: { baseline: skip }
+
+environment:
+  kind: kubernetes
+  image: wom-tools:dev
+  cluster: { nodes: 1 }
+  manifests: ./k8s
+  images: ["wom-scenario/below-the-baseline:dev"]
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  startup: { expectedSec: 130, note: "Поднимаем сервис запуска заданий и ждём, пока сбой разовьётся: около минуты после подъёма кластера." }
+  resources: { cpus: 1, memoryMb: 384, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: bastion
+  writable: ["/home", "/root", "/etc"]

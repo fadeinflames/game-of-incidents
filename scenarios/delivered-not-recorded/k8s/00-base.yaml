@@ -1,0 +1,27 @@
+# Namespace of the notification pipeline and the world outside of it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hooks
+---
+# the customers' servers: not ours
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: outside
+---
+# The platform team's ceiling for every tenant namespace: no container may ask for more than 192Mi.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: tenant-limits
+  namespace: hooks
+  annotations:
+    platform.example/owner: "platform team"
+    platform.example/note: "PLAT-204: per-container memory ceiling for tenant namespaces. A higher ceiling is requested through the platform team."
+spec:
+  limits:
+    - type: Container
+      max: { memory: 192Mi }
+      default: { memory: 96Mi }
+      defaultRequest: { cpu: 20m, memory: 32Mi }

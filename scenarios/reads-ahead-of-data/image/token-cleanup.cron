@@ -1,0 +1,2 @@
+# token-cleanup: delete long-expired install tokens, a minute of small batches at a time (settings: /etc/tokend/cleanup.conf)
+* * * * * tokend /opt/tokend/token-cleanup >> /var/log/token-cleanup/cleanup.log 2>&1

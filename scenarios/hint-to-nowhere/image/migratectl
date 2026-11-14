@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""migratectl: look at the schema change the migrator service is running and control it.
+
+  migratectl status     the active change: shards done and pending, when the next one starts   (default)
+  migratectl show       the plan of the active change: why, which shards, which statements
+  migratectl log [N]    the last N lines of the migrator log (default 30)
+  migratectl pause      stop before the next shard; nothing is executed while paused          (needs sudo)
+  migratectl resume     continue after a pause                                                (needs sudo)
+  migratectl next       do not wait out the rest of the soak: process the next shard now      (needs sudo)
+"""
+import glob
+import json
+import os
+import sys
+import time
+
+HOME = "/var/lib/migrator"
+CHANGES = HOME + "/changes"
+PAUSE = HOME + "/PAUSE"
+PROCEED = HOME + "/PROCEED"
+LOG = "/var/log/migrator/migrator.log"
+PIDFILE = "/run/migrator.pid"
+
+
+def iso(ts):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+
+
+def read_json(path):
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def changes():
+    """(plan, state) of every readable plan, oldest first."""
+    found = []
+    for path in sorted(glob.glob(CHANGES + "/*.json")):
+        try:
+            plan = read_json(path)
+            cid = plan["id"]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        try:
+            state = read_json(f"{CHANGES}/{cid}.state")
+        except (OSError, ValueError):
+            state = {"done": {}, "next_at": 0, "completed_at": None}
+        found.append((plan, state))
+    return found
+
+
+def active(found):
+    for plan, state in found:
+        if not state.get("completed_at"):
+            return plan, state
+    return None, None
+
+
+def runner_alive():
+    try:
+        with open(PIDFILE, encoding="ascii") as f:
+            return os.path.exists(f"/proc/{int(f.read().strip())}")
+    except (OSError, ValueError):
+        return False
+
+
+def span(sec):
+    sec = int(max(sec, 0))
+    return f"{sec // 60}m{sec % 60:02d}s"
+
+
+def print_change(plan, state):
+    shards = plan["shards"]
+    done = state.get("done", {})
+    pending = [s for s in shards if s not in done]
+    paused = os.path.exists(PAUSE)
+    now = time.time()
+    if state.get("completed_at"):
+        what = f"completed {state['completed_at']}"
+    elif not runner_alive():
+        what = "NOT RUNNING: the migrator service is stopped (sudo service migrator start)"
+    elif paused:
+        what = f"PAUSED by the operator before {pending[0]}"
+    elif os.path.exists(PROCEED) or now >= state.get("next_at", 0):
+        what = f"running: {pending[0]} is being processed"
+    else:
+        what = f"running: soak before {pending[0]}"
+    print(f"Change   {plan['id']}  {plan.get('title', '')}")
+    print(f"State    {what}")
+    label = "Shards  "
+    for i, shard in enumerate(shards):
+        if shard in done:
+            line = f"done     {done[shard]}"
+        elif pending and shard == pending[0] and not paused and state.get("next_at", 0) > now:
+            line = f"pending  not before {iso(state['next_at'])} (in {span(state['next_at'] - now)})"
+        else:
+            line = "pending"
+        print(f"{label if i == 0 else '        '} {shard:<10} {line}")
+
+
+def cmd_status():
+    found = changes()
+    plan, state = active(found)
+    if plan is None:
+        print("No active change.")
+        if found:
+            print("Last completed:")
+            print_change(*found[-1])
+        if not runner_alive():
+            print("The migrator service is stopped.")
+        return 0
+    print_change(plan, state)
+    print("Control  sudo migratectl pause | resume | next (skip the rest of the soak).  Details: migratectl show, migratectl log")
+    return 0
+
+
+def cmd_show():
+    found = changes()
+    plan, state = active(found)
+    if plan is None and found:
+        plan, state = found[-1]
+    if plan is None:
+        print("No change is known to the migrator.")
+        return 0
+    print(f"Change      {plan['id']}")
+    print(f"Title       {plan.get('title', '')}")
+    print(f"Requested   {plan.get('requested_by', '-')}")
+    print(f"Approved    {plan.get('approved', '-')}")
+    print(f"Why         {plan.get('reason', '-')}")
+    print(f"Shards      {' -> '.join(plan['shards'])}, soak {plan['soak_sec']}s after each shard")
+    print("Statements, executed on every shard:")
+    for sql in plan["statements"]:
+        print(f"  {sql};")
+    return 0
+
+
+def cmd_log(args):
+    count = int(args[0]) if args and args[0].isdigit() else 30
+    try:
+        with open(LOG, encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except OSError as e:
+        print(f"migratectl: cannot read {LOG}: {e}", file=sys.stderr)
+        return 1
+    sys.stdout.write("".join(lines[-count:]))
+    return 0
+
+
+def need_root():
+    if os.geteuid() != 0:
+        print("migratectl: this command changes what the runner does, run it with sudo", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_pause():
+    need_root()
+    plan, _state = active(changes())
+    open(PAUSE, "a", encoding="ascii").close()
+    if plan is None:
+        print("No active change; the runner will stay paused until 'migratectl resume'.")
+    else:
+        print(f"{plan['id']}: paused. No further shard is touched until 'sudo migratectl resume'.")
+    return 0
+
+
+def cmd_resume():
+    need_root()
+    if not os.path.exists(PAUSE):
+        print("The runner is not paused.")
+        return 0
+    os.remove(PAUSE)
+    print("Resumed. See 'migratectl status' for when the next shard starts.")
+    return 0
+
+
+def cmd_next():
+    need_root()
+    plan, state = active(changes())
+    if plan is None:
+        print("No active change: nothing to process.")
+        return 0
+    if os.path.exists(PAUSE):
+        print(f"{plan['id']} is paused: resume it first (sudo migratectl resume).", file=sys.stderr)
+        return 1
+    if not runner_alive():
+        print("The migrator service is stopped: start it first (sudo service migrator start).", file=sys.stderr)
+        return 1
+    pending = [s for s in plan["shards"] if s not in state.get("done", {})]
+    open(PROCEED, "a", encoding="ascii").close()
+    print(f"{plan['id']}: {pending[0] if pending else 'the next shard'} will be processed now, without the rest of the soak.")
+    return 0
+
+
+def main():
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
+    table = {"status": cmd_status, "show": cmd_show, "pause": cmd_pause, "resume": cmd_resume, "next": cmd_next}
+    if cmd == "log":
+        return cmd_log(sys.argv[2:])
+    if cmd in table:
+        return table[cmd]()
+    print(__doc__.strip())
+    return 0 if cmd in ("help", "-h", "--help") else 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

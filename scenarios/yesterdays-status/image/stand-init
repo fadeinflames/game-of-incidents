@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+"""First boot of the stand: everything that depends on the clock is created here, so that the monthly reset is always
+"last night". PostgreSQL and Redis are running, the daemons are not started yet.
+
+  - the billing periods: the current one began at the last midnight (UTC) that is at least three hours old;
+  - last period's totals, this period's usage records and counters;
+  - the sessions of the customer portal and the record counter in Redis;
+  - the records the gateway nodes still hold in their buffers (delivered by usage-meter);
+  - the cron entry and the log of the monthly reset.
+The numbers are the same on every boot, only the timestamps move.
+"""
+import calendar
+import datetime
+import hashlib
+import json
+import os
+import random
+import shutil
+import sys
+import time
+
+import psycopg2
+import psycopg2.extras
+import redis
+
+MARK = "/var/lib/budget/.stand-init"
+DSN = "host=127.0.0.1 port=5432 dbname=budgets user=budget password=bw-rw-58c1 connect_timeout=5"
+BASE = 2310000                     # the last record number before the records created here
+EXHAUSTED_LAST_PERIOD = [1004, 1011, 1017, 1023, 1029, 1036, 1042, 1048, 1055]
+EXHAUSTED_THIS_PERIOD = [1008, 1019, 1033, 1040, 1051]
+UTC = datetime.timezone.utc
+
+
+def iso(ts):
+    return ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def month_before(day):
+    year, month = (day.year, day.month - 1) if day.month > 1 else (day.year - 1, 12)
+    return day.replace(year=year, month=month, day=min(day.day, calendar.monthrange(year, month)[1]))
+
+
+def amount(rnd):
+    return rnd.randint(30, 120) if rnd.random() < 0.03 else rnd.randint(1, 6)
+
+
+def main():
+    if os.path.exists(MARK):
+        return 0
+    rnd = random.Random(20260701)
+    now = datetime.datetime.now(UTC).replace(microsecond=0)
+    reset = now.replace(hour=0, minute=0, second=0)
+    if now - reset < datetime.timedelta(hours=3):
+        reset -= datetime.timedelta(days=1)
+    prev = month_before(reset)
+    older = month_before(prev)
+    cur_label, prev_label, older_label = (d.strftime("%Y-%m-%d") for d in (reset, prev, older))
+
+    db = psycopg2.connect(DSN)
+    cur = db.cursor()
+    cur.execute("SELECT customer_id, limit_cents FROM budgets ORDER BY customer_id")
+    limits = dict(cur.fetchall())
+    ids = sorted(limits)
+
+    cur.execute("INSERT INTO billing_periods (period, started_at) VALUES (%s, %s), (%s, %s), (%s, %s)",
+                (older_label, older, prev_label, prev, cur_label, reset))
+    cur.execute("UPDATE budgets SET updated_at = %s - (customer_id %% 17) * interval '3 days'", (prev,))
+
+    # last period: nine customers spent their whole budget, the rest a part of it
+    history = {}
+    for c in ids:
+        if c in EXHAUSTED_LAST_PERIOD:
+            history[c] = limits[c] + rnd.randint(0, 60)
+        else:
+            history[c] = int(limits[c] * rnd.uniform(0.15, 0.92))
+    psycopg2.extras.execute_values(cur, "INSERT INTO usage_history (period, customer_id, spent_cents) VALUES %s",
+                                   [(prev_label, c, history[c]) for c in ids]
+                                   + [(older_label, c, int(limits[c] * rnd.uniform(0.1, 0.9))) for c in ids])
+
+    # this period: the customers who were refused since midnight have spent nothing; five have already spent the new
+    # budget; the others are somewhere on the way
+    span = max(600.0, (now - reset).total_seconds() - 150)
+    records = []
+    spent = dict.fromkeys(ids, 0)
+    for c in ids:
+        if c in EXHAUSTED_LAST_PERIOD:
+            continue
+        if c in EXHAUSTED_THIS_PERIOD:
+            target, window = limits[c], 0.6
+        elif c == 1026:
+            target, window = int(limits[c] * 0.25), 1.0
+        else:
+            target, window = int(limits[c] * rnd.uniform(0.04, 0.22)), 1.0
+        while spent[c] < target:
+            a = amount(rnd)
+            spent[c] += a
+            records.append((reset + datetime.timedelta(seconds=rnd.uniform(1, span * window)), c, a))
+    # and the last hours of the closed period
+    for _ in range(300):
+        c = rnd.choice(ids)
+        records.append((reset - datetime.timedelta(seconds=rnd.uniform(1, 3 * 3600)), c, rnd.randint(1, 6)))
+    records.sort(key=lambda r: r[0])
+    rows = [(BASE + n, c, a, at, "gw-%d" % rnd.randint(1, 4), at + datetime.timedelta(seconds=rnd.uniform(0.4, 2.5)))
+            for n, (at, c, a) in enumerate(records, 1)]
+    psycopg2.extras.execute_values(
+        cur, "INSERT INTO usage_ledger (seq, customer_id, amount_cents, at, node, applied_at) VALUES %s", rows, page_size=2000)
+    psycopg2.extras.execute_values(
+        cur, "INSERT INTO usage_current (customer_id, spent_cents, updated_at) VALUES %s",
+        [(c, spent[c], max([r[0] for r in records if r[1] == c and r[0] >= reset] or [reset])) for c in ids])
+    db.commit()
+    cur.execute("ANALYZE")
+    db.commit()
+    db.close()
+
+    store = redis.Redis(host="127.0.0.1", port=6379, decode_responses=True)
+    store.set("meter:seq", BASE + len(rows))
+    for n in range(24):
+        token = hashlib.sha256(("wom-yesterdays-status-session-%d" % n).encode()).hexdigest()[:32]
+        customer = ids[(n * 7) % len(ids)]
+        started = now - datetime.timedelta(minutes=rnd.randint(4, 170))
+        store.hset("session:" + token, mapping={"customer_id": customer, "user": "admin@customer-%d.example" % customer,
+                                                "created_at": iso(started)})
+        store.expire("session:" + token, 12 * 3600)
+    store.hset("stats:access:" + now.strftime("%Y%m%d"), mapping={"allowed": rnd.randint(21000, 26000), "blocked": rnd.randint(2400, 3100)})
+
+    # what the gateway nodes still hold in their buffers: records of the last hours of the closed period
+    others = [c for c in ids if c not in EXHAUSTED_LAST_PERIOD]
+    lines = []
+    for _ in range(600):
+        record = {"type": "usage", "amount_cents": rnd.randint(1, 6),
+                  "at": iso(reset - datetime.timedelta(seconds=rnd.randint(90, 3 * 3600))), "node": "gw-%d" % rnd.randint(1, 4)}
+        if rnd.random() < 0.55:
+            c = rnd.choice(EXHAUSTED_LAST_PERIOD)
+            record.update(customer=c, budget_state="exhausted", spent_cents=history[c], limit_cents=limits[c])
+        else:
+            record["customer"] = rnd.choice(others)
+        lines.append(json.dumps(record))
+    with open("/var/lib/usage-meter/buffered.jsonl", "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+
+    with open("/etc/cron.d/budget-reset", "w", encoding="utf-8") as fh:
+        fh.write("# budget-reset: the billing period of the paid feature begins on day %d of every month, 00:00 UTC\n" % reset.day)
+        fh.write("0 0 %d * * budget /opt/budget/bin/monthly-reset >> /var/log/budget-reset/reset.log 2>&1\n" % reset.day)
+    os.chmod("/etc/cron.d/budget-reset", 0o644)
+    with open("/var/log/budget-reset/reset.log", "w", encoding="utf-8") as fh:
+        fh.write("%s monthly-reset: period %s opened; 60 counters archived to period %s and reset; 58 cached access statuses invalidated\n"
+                 % (iso(prev + datetime.timedelta(seconds=2)), prev_label, older_label))
+        fh.write("%s monthly-reset: period %s opened; 60 counters archived to period %s and reset; 60 cached access statuses invalidated\n"
+                 % (iso(reset + datetime.timedelta(seconds=2)), cur_label, prev_label))
+
+    shutil.chown("/var/log/budget-reset/reset.log", "budget", "budget")
+    shutil.chown("/var/lib/usage-meter/buffered.jsonl", "meter", "meter")
+
+    # the settings files: one was written long ago, the other changed a week before this reset
+    week = time.time() - 7 * 86400 - 5 * 3600
+    os.utime("/etc/settingsd/namespaces/budget-worker.toml", (week, week))
+    old = time.time() - 143 * 86400
+    for path in ("/etc/settingsd/namespaces/access-api.toml", "/etc/budget-worker/worker.conf", "/etc/access-api/api.conf",
+                 "/etc/usage-meter/meter.conf", "/etc/redis/redis.conf"):
+        os.utime(path, (old, old))
+
+    with open(MARK, "w") as fh:
+        fh.write(iso(now) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

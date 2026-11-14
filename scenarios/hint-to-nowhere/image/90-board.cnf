@@ -1,0 +1,9 @@
+# board-01: a small instance, three shard schemas of the board
+[mysqld]
+bind-address            = 127.0.0.1
+skip-name-resolve
+max_connections         = 60
+innodb_buffer_pool_size = 64M
+performance_schema      = OFF
+key_buffer_size         = 8M
+table_open_cache        = 200

@@ -1,0 +1,11 @@
+# jobrunner on alerts-01: per-queue concurrency limits.
+# The number is how many jobs of that queue may run at the same time.
+# Format and how to apply a change: /usr/share/doc/jobrunner/README
+limits:
+  secalerts.mailers: 4
+  secalerts.webhooks: 6
+  secalerts.exports: 2
+  # advisory pipeline: one job per affected repository, and every job holds a database
+  # connection for as long as it runs. 6 + 6 is what was agreed with the DBA team.
+  secalerts.advisory_fanout: 6
+  secalerts.advisory_fanout_bulk: 6

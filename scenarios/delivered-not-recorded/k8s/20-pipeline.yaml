@@ -1,0 +1,131 @@
+# The notification pipeline, release 1.8.3. One image holds every release: the path in `command` picks one.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dispatcher
+  namespace: hooks
+  labels: { app: dispatcher, app.kubernetes.io/part-of: hooks-pipeline, app.kubernetes.io/version: "1.8.3" }
+  annotations:
+    kubernetes.io/change-cause: "release 1.8.3"
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  selector:
+    matchLabels: { app: dispatcher }
+  template:
+    metadata:
+      labels: { app: dispatcher, app.kubernetes.io/version: "1.8.3" }
+    spec:
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 15
+      containers:
+        - name: dispatcher
+          image: wom-scenario/delivered-not-recorded:dev
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "/opt/pipeline/releases/1.8.3/dispatcher.py"]
+          env:
+            - { name: REDIS_HOST, value: redis }
+            - { name: CUSTOMER_ENDPOINT_BASE, value: "http://customers.outside.svc.cluster.local:8080/hooks" }
+            - { name: LOG_LEVEL, value: info }
+          ports:
+            - { containerPort: 9102, name: metrics }
+          readinessProbe:
+            httpGet: { path: /healthz, port: metrics }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+            limits: { memory: 96Mi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recorder
+  namespace: hooks
+  labels: { app: recorder, app.kubernetes.io/part-of: hooks-pipeline, app.kubernetes.io/version: "1.8.3" }
+  annotations:
+    kubernetes.io/change-cause: "release 1.8.3"
+spec:
+  replicas: 1
+  # one recorder at a time
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: recorder }
+  template:
+    metadata:
+      labels: { app: recorder, app.kubernetes.io/version: "1.8.3" }
+    spec:
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 15
+      containers:
+        - name: recorder
+          image: wom-scenario/delivered-not-recorded:dev
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "/opt/pipeline/releases/1.8.3/recorder.py"]
+          env:
+            - { name: REDIS_HOST, value: redis }
+            - { name: PGHOST, value: postgres }
+            - { name: PGUSER, value: hooks }
+            - { name: PGPASSWORD, value: hooks }
+            - { name: PGDATABASE, value: hooks }
+            - { name: LOG_LEVEL, value: info }
+          ports:
+            - { containerPort: 9102, name: metrics }
+          readinessProbe:
+            httpGet: { path: /healthz, port: metrics }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+            limits: { memory: 96Mi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: history-api
+  namespace: hooks
+  labels: { app: history-api, app.kubernetes.io/part-of: hooks-pipeline, app.kubernetes.io/version: "1.8.3" }
+  annotations:
+    kubernetes.io/change-cause: "release 1.8.3"
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  selector:
+    matchLabels: { app: history-api }
+  template:
+    metadata:
+      labels: { app: history-api, app.kubernetes.io/version: "1.8.3" }
+    spec:
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: history-api
+          image: wom-scenario/delivered-not-recorded:dev
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "/opt/pipeline/releases/1.8.3/history_api.py"]
+          env:
+            - { name: PGHOST, value: postgres }
+            - { name: PGUSER, value: hooks }
+            - { name: PGPASSWORD, value: hooks }
+            - { name: PGDATABASE, value: hooks }
+            - { name: LOG_LEVEL, value: info }
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+            limits: { memory: 96Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: history-api
+  namespace: hooks
+spec:
+  selector: { app: history-api }
+  ports:
+    - { name: http, port: 8080, targetPort: http }

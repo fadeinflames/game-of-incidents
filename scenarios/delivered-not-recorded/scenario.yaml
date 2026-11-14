@@ -1,0 +1,61 @@
+version: 2
+slug: delivered-not-recorded
+title: "Доставлено, но не записано"
+summary: "Клиенты получают уведомления о платежах, но в журнале доставок части из них нет, и отправить их повторно нельзя. Все поды в Ready, ошибок и перезапусков нет."
+type: "Kubernetes, Redis Streams, PostgreSQL, конвейер доставки"
+difficulty: MIDDLE
+durationMin: 30
+tags: [kubernetes, redis, streams, postgresql, deployment, webhooks, data-consistency, postmortem]
+
+contextJson:
+  infra: "Кластер kind, одна нода. Namespace hooks: конвейер исходящих уведомлений платёжной платформы. emitter публикует события в поток Redis events; dispatcher (два пода) отправляет каждое событие POST-запросом на сервер клиента и кладёт запись о доставке в поток deliveries; recorder переносит записи в PostgreSQL; history-api показывает их клиенту в личном кабинете. Namespace outside: customers, серверы клиентов."
+  services: ["emitter", "dispatcher", "recorder", "history-api", "redis", "postgres", "customers"]
+  setup: "Сегодня в 14:05 началась выкатка релиза 2.0.0 конвейера (CHG-4521). Инженер, который её вёл, с 14:20 на встрече у заказчика и недоступен до вечера."
+  time: "Четверг, 14:50"
+eventsJson:
+  - { t: 0, type: msg, title: "Поддержка", body: "«Три клиента за полчаса с одним и тем же: уведомление о платеже пришло на их сервер, а в журнале доставок в личном кабинете его нет. Кнопка „Отправить повторно“ для таких доставок недоступна, сверку с нами они закрыть не могут.»" }
+  - { t: 4, type: msg, title: "Команда личного кабинета", body: "«Журнал отдаёт history-api, и его как раз сегодня обновляли. Может, откатим его и посмотрим?»" }
+  - { t: 9, type: msg, title: "Руководитель поддержки", body: "«Клиенты просят просто прислать им всё за сегодня ещё раз, чтобы наверняка. Можем так сделать?»" }
+  - { t: 15, type: event, title: "Дежурный аналитик", body: "«По графикам конвейер здоров: очередь записей о доставках разбирается, отставание ноль, ошибок в логах нет. Не понимаю, на что жалуются.»" }
+hintsJson:
+  - level: 1
+    penalty: 0
+    text: "Направление: доставка дошла до клиента, значит, искать надо после неё. Запись о доставке проходит свой путь: dispatcher, поток deliveries, recorder, таблица в PostgreSQL, history-api. Посчитай записи на каждом шаге и найди тот, после которого их становится меньше. Компонент, который ни на что не жалуется, не обязательно делает свою работу."
+  - level: 2
+    penalty: 5
+    text: "Инструмент: kubectl -n hooks exec deploy/redis -- redis-cli XLEN deliveries, затем XINFO GROUPS deliveries и XREVRANGE deliveries + - COUNT 1. Сравни с select count(*) from deliveries в PostgreSQL. Счётчики recorder: kubectl -n hooks exec deploy/recorder -- curl -s localhost:9102/metrics, то же у dispatcher. Что и когда выкатывалось: kubectl -n hooks rollout history deploy/<имя>, kubectl -n hooks get deploy, kubectl -n hooks get pods -L app.kubernetes.io/version, kubectl -n hooks describe deploy <имя>. Описание конвейера и CHANGELOG лежат в образе: /opt/pipeline."
+  - level: 3
+    penalty: 15
+    text: "Почти ответ: recorder уже на релизе 2.0.0 и ждёт записи в новом формате (одно поле rec), а оба пода dispatcher остались на 1.8.3 и пишут старый формат: выкатка dispatcher не началась, ReplicaSet не может создать под из-за LimitRange (лимит памяти 256Mi при потолке 192Mi). Записи старого формата recorder подтверждает и пропускает. Приведи обе стороны к одному формату, проще всего назад: kubectl -n hooks rollout undo deploy/dispatcher --to-revision=1, затем kubectl -n hooks rollout undo deploy/recorder --to-revision=1. Пропущенные записи остались в потоке deliveries: верни группу в начало потока командой redis-cli XGROUP SETID deliveries recorder 0, recorder прочитает их заново, а таблица не примет дубликаты. Поток events и его группу не трогай: это повторная отправка клиентам."
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+sources:
+  - title: "GitHub, 14.07.2026: Incident with Webhooks"
+    url: "https://www.githubstatus.com/incidents/ydpk76bj34z8"
+
+# the unbroken stand (every component on 1.8.3) records what it delivers: the grader's own three deliveries appear
+# in the history and the store matches what the customers received, so the grader passes before break.sh
+test: { baseline: pass }
+
+environment:
+  kind: kubernetes
+  image: wom-tools:dev
+  cluster: { nodes: 1 }
+  manifests: ./k8s
+  images: ["wom-scenario/delivered-not-recorded:dev", "postgres:16-alpine", "redis:7.4.1-alpine"]
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 50
+  startup: { expectedSec: 120, note: "Поднимаем конвейер, даём ему поработать и выкатываем релиз." }
+  resources: { cpus: 1, memoryMb: 384, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: bastion
+  writable: ["/home", "/root", "/etc"]

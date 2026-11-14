@@ -1,0 +1,7 @@
+#!/bin/sh
+# db-old / db-new: a root SQL shell on one of the two clusters.
+#   db-new tokens                                          interactive
+#   db-old tokens -e 'SELECT COUNT(*) FROM install_tokens' one statement
+name=$(basename "$0")
+[ "$(id -u)" = 0 ] || exec sudo -n "$0" "$@"
+exec /usr/bin/mysql --no-defaults --socket="/run/mysqld/$name.sock" --prompt="$name [\d]> " "$@"

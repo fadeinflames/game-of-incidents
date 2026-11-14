@@ -1,0 +1,15 @@
+# git settings of the storage server git-03: they apply to every repository unless its own config says otherwise
+[gc]
+	# repositories are maintained by git-housekeeping from cron, git does not start gc on its own
+	auto = 0
+[receive]
+	autogc = false
+[core]
+	# small server: at most 32 MB of pack files are mapped into memory at a time
+	packedGitWindowSize = 8m
+	packedGitLimit = 32m
+[pack]
+	# same as on the other storage servers
+	threads = 4
+[safe]
+	directory = *

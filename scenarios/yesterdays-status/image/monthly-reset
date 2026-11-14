@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""monthly-reset: opens a new billing period. Run by cron once a month (see /etc/cron.d/budget-reset).
+
+  1. the counters of the period that ends (usage_current) are archived to usage_history;
+  2. the counters are set to zero and the new period is written to billing_periods;
+  3. the cached access statuses (access:* in Redis) are removed, so that access-api computes them again.
+
+Usage: monthly-reset [--force]
+A period is opened once: when the current period is younger than 20 days the job does nothing. --force resets the
+counters again all the same (everything spent since the period began moves to usage_history).
+"""
+import configparser
+import datetime
+import sys
+import time
+
+import psycopg2
+import redis
+
+CONF = "/etc/budget-worker/worker.conf"
+LOG = "/var/log/budget-reset/reset.log"
+UTC = datetime.timezone.utc
+
+
+def say(msg):
+    line = "%s monthly-reset: %s" % (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), msg)
+    print(line, flush=True)
+    if sys.stdout.isatty():
+        # run by hand: the terminal gets the line, the log gets it too
+        try:
+            with open(LOG, "a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+        except OSError:
+            pass
+
+
+def main():
+    args = sys.argv[1:]
+    if args and args[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0
+    force = "--force" in args
+    conf = configparser.ConfigParser()
+    if not conf.read(CONF):
+        print("monthly-reset: cannot read %s (run it as the user budget or with sudo)" % CONF, file=sys.stderr)
+        return 1
+    db = psycopg2.connect(conf.get("database", "dsn"))
+    cur = db.cursor()
+    cur.execute("SELECT period, started_at FROM billing_periods ORDER BY started_at DESC LIMIT 1")
+    current, started = cur.fetchone()
+    now = datetime.datetime.now(UTC)
+    age = now - started
+    if age < datetime.timedelta(days=20) and not force:
+        say("period %s was opened %d h ago, the next reset is due in a month; nothing done (--force resets the counters again)"
+            % (current, age.total_seconds() // 3600))
+        return 1
+    label = now.strftime("%Y-%m-%d")
+    cur.execute("INSERT INTO usage_history (period, customer_id, spent_cents) "
+                "SELECT %s, customer_id, spent_cents FROM usage_current "
+                "ON CONFLICT (period, customer_id) DO UPDATE SET spent_cents = usage_history.spent_cents + EXCLUDED.spent_cents",
+                (current,))
+    archived = cur.rowcount
+    cur.execute("UPDATE usage_current SET spent_cents = 0, updated_at = now()")
+    cur.execute("INSERT INTO billing_periods (period, started_at) VALUES (%s, %s) "
+                "ON CONFLICT (period) DO UPDATE SET started_at = EXCLUDED.started_at", (label, now))
+    db.commit()
+
+    store = redis.Redis(host=conf.get("redis", "host", fallback="127.0.0.1"), port=conf.getint("redis", "port", fallback=6379),
+                        socket_timeout=3, socket_connect_timeout=3, decode_responses=True)
+    removed = 0
+    for key in store.scan_iter(match="access:*", count=500):
+        removed += store.delete(key)
+    say("period %s opened; %d counters archived to period %s and reset; %d cached access statuses invalidated"
+        % (label, archived, current, removed))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

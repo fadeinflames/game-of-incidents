@@ -1,0 +1,57 @@
+version: 2
+slug: yesterdays-status
+title: "Вчерашний статус"
+summary: "Ночью начался новый расчётный период и бюджеты клиентов обнулились, но часть клиентов до сих пор получает отказ в платной функции. В базе их бюджет не исчерпан."
+type: "Linux, Redis, PostgreSQL, кэш, очередь событий, настройки сервисов"
+difficulty: MIDDLE
+durationMin: 30
+tags: [linux, redis, postgresql, cache, queue, configuration, billing, postmortem]
+
+contextJson:
+  infra: "Один сервер budget-01 (Debian 12): учёт месячных бюджетов на платное распознавание документов. Шлюзы продукта спрашивают access-api (порт 8080), можно ли клиенту платную функцию. API отвечает статусом из Redis, а если его нет, считает по PostgreSQL 15 (база budgets). Записи об использовании и изменения бюджетов идут через очередь в Redis, их применяет budget-worker. Настройки сервисов раздаёт settingsd (порт 8500). Период раз в месяц открывает задача monthly-reset из cron."
+  services: ["postgresql", "redis", "settingsd", "access-api", "budget-worker", "usage-meter", "cron"]
+  setup: "В 00:00 UTC начался новый расчётный период, monthly-reset отработала без ошибок. К сбросу готовились: неделю назад вышел budget-worker 2.8.0. После сброса релизов не было."
+  time: "Первые сутки нового расчётного периода"
+eventsJson:
+  - { t: 0, type: alert, title: "Поддержка: отказ в платном распознавании", body: "С начала нового периода пишут клиенты: платное распознавание недоступно, хотя бюджет обнулился и в этом периоде они ничего не потратили. Обращений немного, большинство клиентов работает как обычно." }
+  - { t: 4, type: event, title: "Поддержка", body: "Клиент 1023 пишет: поднял месячный бюджет в кабинете больше получаса назад, доступа всё нет. Клиент 1008 тоже жалуется на отказ, но у него в кабинете расход уже равен бюджету." }
+  - { t: 9, type: event, title: "Коллега из биллинга", body: "Может, запустить сброс ещё раз, с --force? Или почистить Redis целиком: в прошлый раз после FLUSHALL всё завелось само." }
+hintsJson:
+  - level: 1
+    penalty: 0
+    text: "Направление: возьми одного клиента, которому отказано, и сравни ответ API с тем, что лежит в базе. Посмотри, откуда API взял ответ и когда этот ответ был посчитан. Потом найди, кто его туда записал, и проверь, пропадает ли он насовсем, если его удалить."
+  - level: 2
+    penalty: 5
+    text: "Инструмент: curl -s 127.0.0.1:8080/v1/access/1017 и redis-cli get access:1017 (поля as_of и source), sudo -u postgres psql -d budgets (таблицы usage_current, budgets, billing_periods), grep 1017 /var/log/budget-worker/worker.log. Что должен делать воркер с такими записями, написано в /opt/budget/CHANGELOG. Какие настройки он получил на самом деле: первая строка settings в его логе и curl -s 127.0.0.1:8500/v1/settings/budget-worker. Почему они такие: /var/log/settingsd/settingsd.log. Длина очереди: redis-cli llen queue:budget-updates."
+  - level: 3
+    penalty: 15
+    text: "Почти ответ: воркер записывает в кэш состояние «бюджет исчерпан» из запоздавших записей прошлого периода. Защита access.discard_state_before_reset включена в /etc/settingsd/namespaces/budget-worker.toml, но файл не разбирается (значение yes вместо true), и settingsd раздаёт значения по умолчанию. Исправь значение, подними там же queue.batch_size (например, до 500), выполни sudo service settingsd reload и дождись строки settings changed в логе воркера. Когда очередь опустеет, удали только ключи access:* (redis-cli --scan --pattern 'access:*' | xargs redis-cli del): API посчитает статусы заново. Остальные ключи Redis и базу не трогай."
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+sources:
+  - title: "GitHub, 01.07.2026: Delays in copilot budget limits resets for some users"
+    url: "https://www.githubstatus.com/incidents/rl7f90w0n0gq"
+
+environment:
+  kind: container
+  image: wom-scenario/yesterdays-status:dev
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 50
+  startup: { expectedSec: 45, note: "Поднимаем PostgreSQL, Redis и сервисы бюджета, ждём первых отказов." }
+  resources: { cpus: 1, memoryMb: 256, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: budget-01
+  writable: ["/etc", "/var", "/home", "/root"]
+
+# on an unbroken stand the safeguard is loaded and the worker keeps up with the gateways: nobody is refused on an old
+# status, the queue is short, and the late record the grader puts into the queue does not block anybody
+test: { baseline: pass }

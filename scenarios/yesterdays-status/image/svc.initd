@@ -1,0 +1,55 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          budget-services
+# Required-Start:    $local_fs $network
+# Required-Stop:     $local_fs
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: one init script for the daemons of this host; the service is chosen by the script name
+### END INIT INFO
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+NAME=$(basename "$0")
+STOP_RETRY=TERM/8/KILL/2
+RELOAD=no
+case "$NAME" in
+  # Redis runs in the foreground under this script; a stop is a SIGTERM
+  redis)         RUNAS=redis;     CMD="/usr/bin/redis-server /etc/redis/redis.conf";        LOG=/var/log/redis/redis.log; STOP_RETRY=TERM/20/KILL/2 ;;
+  settingsd)     RUNAS=settingsd; CMD="/usr/bin/python3 -u /opt/settingsd/settingsd.py";    LOG=/var/log/settingsd/settingsd.log; RELOAD=yes ;;
+  access-api)    RUNAS=accessapi; CMD="/usr/bin/python3 -u /opt/access-api/api.py";         LOG=/var/log/access-api/api.log ;;
+  budget-worker) RUNAS=budget;    CMD="/usr/bin/python3 -u /opt/budget/budget_worker.py";   LOG=/var/log/budget-worker/worker.log ;;
+  usage-meter)   RUNAS=meter;     CMD="/usr/bin/python3 -u /opt/usage-meter/meter.py";      LOG=/var/log/usage-meter/meter.log ;;
+  *) echo "unknown service: $NAME" >&2; exit 2 ;;
+esac
+PIDFILE=/run/$NAME.pid
+
+. /lib/lsb/init-functions
+
+start() {
+  log_daemon_msg "Starting $NAME"
+  touch "$LOG" && chown "$RUNAS" "$LOG"
+  start-stop-daemon --start --quiet --oknodo --background --make-pidfile --pidfile "$PIDFILE" \
+    --chuid "$RUNAS" --no-close --startas /bin/sh -- -c "exec $CMD" >>"$LOG" 2>&1
+  log_end_msg $?
+}
+stop() {
+  log_daemon_msg "Stopping $NAME"
+  start-stop-daemon --stop --quiet --oknodo --retry=$STOP_RETRY --pidfile "$PIDFILE"
+  rc=$?; rm -f "$PIDFILE"; log_end_msg $rc
+}
+reload() {
+  [ "$RELOAD" = yes ] || { echo "$NAME does not support reload, use restart" >&2; exit 3; }
+  log_daemon_msg "Reloading $NAME"
+  start-stop-daemon --stop --quiet --signal HUP --pidfile "$PIDFILE"
+  rc=$?
+  # the daemon rereads its files a moment after the signal: the next command should already see the result
+  sleep 1
+  log_end_msg $rc
+}
+case "${1:-}" in
+  start) start ;;
+  stop) stop ;;
+  restart) stop; sleep 1; start ;;
+  reload|force-reload) reload ;;
+  status) status_of_proc -p "$PIDFILE" "$NAME" "$NAME" ;;
+  *) echo "Usage: service $NAME {start|stop|restart|reload|status}"; exit 2 ;;
+esac

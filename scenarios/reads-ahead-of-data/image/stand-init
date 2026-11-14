@@ -1,0 +1,72 @@
+#!/bin/sh
+# First boot of the stand: the history that comes with the image is moved so that it ends "now".
+#   - the tokens of the last month are spread up to a minute and a half ago, the same way on both clusters;
+#   - the job row of tablemover and the logs get the dates of a migration that started two and a half days ago.
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+FLAG=/var/lib/tokend/.stand-init-done
+[ -e "$FLAG" ] && exit 0
+now=$(date -u +%s)
+ts() { date -u -d "@$(( now - $1 ))" +%Y-%m-%dT%H:%M:%SZ; }
+sqlts() { date -u -d "@$(( now - $1 ))" '+%Y-%m-%d %H:%M:%S'; }
+day() { date -u -d "@$(( now - $1 ))" +%Y-%m-%d; }
+
+t0=$(mysql --no-defaults -N -B -S /run/mysqld/db-old.sock tokens -e "SELECT created_at FROM install_tokens WHERE id = 200300" </dev/null)
+if [ -n "$t0" ]; then
+  for n in db-old db-new; do
+    mysql --no-defaults -S "/run/mysqld/$n.sock" tokens <<SQL &
+UPDATE install_tokens
+   SET created_at = '$t0' + INTERVAL ROUND((id - 200300) * (TIMESTAMPDIFF(SECOND, '$t0', '$(sqlts 90)')) / 31200) SECOND,
+       expires_at = created_at + INTERVAL 1 HOUR
+ WHERE id BETWEEN 200301 AND 231500 AND '$(sqlts 90)' > '$t0';
+SQL
+  done
+  wait
+fi
+
+# the migration: job created 2 days 12 hours ago, the initial copy took 1 h 16 min, since then the change log is tailed
+C0=$(( 60 * 3600 ))
+C1=$(( C0 - 4580 ))
+mysql --no-defaults -S /run/mysqld/db-new.sock tokens <<SQL
+UPDATE _tablemover_job SET copy_started_at = '$(sqlts $C0)', copy_done_at = '$(sqlts $C1)', applied_change_ts = '$(sqlts 95)',
+       heartbeat_at = NOW() WHERE job = 'tokens-move';
+SQL
+
+{
+  echo "$(ts $C0) tablemover: job tokens-move created: table install_tokens, db-old (127.0.0.1:3306) -> db-new (127.0.0.1:3307)"
+  echo "$(ts $C0) tablemover: triggers installed on the source, the change log _tablemover_changes starts at seq 1"
+  echo "$(ts $(( C0 - 1 ))) tablemover: initial copy started: the target table is emptied, 229015 rows up to id 229015 to copy, 50 rows per second (about 01:16:20); change log position 0"
+  echo "$(ts $(( C0 - 1201 ))) tablemover: initial copy: 60000 of 229015 (by id), state running"
+  echo "$(ts $(( C0 - 2401 ))) tablemover: initial copy: 120000 of 229015 (by id), state running"
+  echo "$(ts $(( C0 - 3601 ))) tablemover: initial copy: 180000 of 229015 (by id), state running"
+  echo "$(ts $C1) tablemover: initial copy finished; tailing the change log from seq 0"
+  echo "$(ts $(( C1 - 30 ))) tablemover: tailing: applied seq 21, backlog 0 changes, lag 00:00:00, in 0.0/s, out 0.0/s, state running"
+  echo "$(ts 86400) tablemover: tailing: applied seq 1526, backlog 0 changes, lag 00:00:00, in 0.0/s, out 0.0/s, state running"
+  echo "$(ts 7200) tablemover: tailing: applied seq 2446, backlog 0 changes, lag 00:00:00, in 0.0/s, out 0.0/s, state running"
+  echo "$(ts 600) tablemover: tailing: applied seq 2523, backlog 1 changes, lag 00:00:01, in 0.0/s, out 0.0/s, state running"
+} > /var/log/tablemover/tablemover.log
+chown tablemover:tablemover /var/log/tablemover/tablemover.log
+
+{
+  echo "$(ts $(( C0 + 9 ))) dbmove: CHG-4412 'move tokens.install_tokens from db-old to db-new' approved, 5 steps, owner: database team"
+  echo "$(ts $C0) dbmove: step 1/5 started: tablemover job tokens-move created, the initial copy is running"
+  echo "$(ts $C1) dbmove: step 1/5 done: the initial copy is finished, tablemover tails the change log"
+  echo "$(ts $C1) dbmove: step 2/5 waiting: the cutovers run in the maintenance window of $(day 0), reads first, writes 45 minutes later"
+} > /var/log/dbmove/runbook.log
+
+# the cleanup of expired tokens has been switched off for 200 days
+OFF=$(( 200 * 86400 + 11520 ))
+{
+  echo "$(ts $(( OFF + 172 ))) token-cleanup: run started on db-old: 1 tokens expired more than 30 days ago, deleting 80 every 2 s"
+  echo "$(ts $(( OFF + 170 ))) token-cleanup: run finished: deleted 1 tokens in 1 batches, 0 left"
+  echo "$(ts $(( OFF + 112 ))) token-cleanup: run started on db-old: 0 tokens expired more than 30 days ago, deleting 80 every 2 s"
+  echo "$(ts $(( OFF + 112 ))) token-cleanup: run finished: deleted 0 tokens in 0 batches, 0 left"
+  echo "$(ts $(( OFF + 52 ))) token-cleanup: run started on db-old: 1 tokens expired more than 30 days ago, deleting 80 every 2 s"
+  echo "$(ts $(( OFF + 50 ))) token-cleanup: run finished: deleted 1 tokens in 1 batches, 0 left"
+  echo "$(ts $OFF) token-cleanup: disabled (enabled = no in /etc/tokend/cleanup.conf): runs are skipped until it is enabled again"
+} > /var/log/token-cleanup/cleanup.log
+chown tokend:tokend /var/log/token-cleanup/cleanup.log
+echo disabled > /var/lib/tokend/cleanup.status
+chown tokend:tokend /var/lib/tokend/cleanup.status
+sed -i "s/^enabled = no\$/# $(day $OFF): switched off during INC-1907 (the deletes were slowing db-old down), to be enabled again by the tokens team\nenabled = no/" /etc/tokend/cleanup.conf
+
+: > "$FLAG"

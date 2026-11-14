@@ -1,0 +1,56 @@
+version: 2
+slug: all-at-once
+title: "Всем сразу"
+summary: "Пользователи не могут отклонить или закрыть алерт безопасности: больше половины действий заканчиваются ошибкой 503. Ошибки начались несколько минут назад."
+type: "Linux, MariaDB, Redis, очереди заданий, пул воркеров"
+difficulty: MIDDLE
+durationMin: 25
+tags: [linux, mariadb, redis, queues, workers, connections, postmortem]
+
+contextJson:
+  infra: "Один сервер alerts-01 (Debian 12): сервис алертов безопасности для репозиториев. alerts-api (Python, порт 8080) принимает действия пользователей с алертами, данные лежат в MariaDB, база secalerts. advisory-feed публикует бюллетени об уязвимостях и ставит задания в очереди Redis, пул воркеров jobrunner выполняет их и создаёт алерты."
+  services: ["mariadb", "redis-queue", "alerts-api", "advisory-feed", "jobrunner"]
+  setup: "Несколько минут назад вышел бюллетень о библиотеке, от которой зависят 48 тысяч репозиториев. Около суток назад бюллетень на 31 тысячу репозиториев разошёлся за три часа, и его никто не заметил. Релизов alerts-api сегодня не было."
+  time: "Рабочий день, после обеда"
+eventsJson:
+  - { t: 0, type: alert, title: "AlertsApiErrors > 50 %", body: "alerts-01: POST /alerts/<id>/dismiss и /resolve отвечают 503, GET /alerts/<id> тоже через раз. GET /health отвечает 200." }
+  - { t: 3, type: event, title: "Команда безопасности", body: "Бюллетень по lantern-log критический, клиенты ждут алерты по нему. Рассылку не отменяем: её должен получить каждый из 48 тысяч репозиториев. Если она пойдёт медленнее, переживём." }
+  - { t: 7, type: event, title: "DBA", body: "max_connections на этом сервере 40 и останется 40: память рассчитана под это число, поднимать не будем. Предыдущий дежурный уже перезапускал и базу, и jobrunner, хватило на несколько секунд." }
+hintsJson:
+  - level: 1
+    penalty: 0
+    text: "Направление: текст ошибки в логе API говорит, какого ресурса базе не хватает. Выясни, кто его занял. Потом ответь на главный вопрос: почему сутки назад при бюллетене такого же размера этого не случилось. Сравни, как система работала тогда и как работает сейчас."
+  - level: 2
+    penalty: 5
+    text: "Инструмент: sudo mysql -e 'SELECT user, COUNT(*) FROM information_schema.processlist GROUP BY user' покажет, чьи соединения. jobrunnerctl queues покажет по каждой очереди, сколько заданий ждёт, сколько в работе и какой предел действует. Строки listening on в /var/log/jobrunner/jobrunner.log.1 и jobrunner.log показывают то же для вчерашнего и сегодняшнего запуска. Что меняли на хосте, записано в /var/log/ops/changes.log."
+  - level: 3
+    penalty: 15
+    text: "Почти ответ: пять часов назад очереди рассылки переименовали (advisory_fanout стала secalerts.advisory_fanout, так же и bulk), а пределы в /etc/jobrunner/limits.yml остались под старыми именами. Очередь без записи не ограничена, поэтому все 96 воркеров берут задания рассылки, и каждое держит соединение с базой. Исправь имена двух записей в limits.yml и выполни sudo service jobrunner reload. Очереди не чисти, max_connections не трогай."
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+sources:
+  - title: "GitHub, 30.10.2026: Incident with Dependabot"
+    url: "https://www.githubstatus.com/incidents/lyyfm7j4pkgl"
+
+environment:
+  kind: container
+  image: wom-scenario/all-at-once:dev
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  startup: { expectedSec: 45, note: "Поднимаем MariaDB, Redis и пул воркеров, публикуем бюллетень и ждём первых отказов." }
+  resources: { cpus: 1, memoryMb: 384, pids: 512 }
+  network: { egress: none }
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: alerts-01
+  writable: ["/etc", "/var", "/home", "/root"]
+
+# on an unbroken stand everything the grader asks for already holds: the limits carry the current queue names, so
+# the 150 probe jobs per fan-out queue are worked off 6 + 6 at a time, user actions succeed, nothing is missing
+test: { baseline: pass }

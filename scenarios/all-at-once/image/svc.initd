@@ -1,0 +1,56 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          alerts-services
+# Required-Start:    $local_fs $network
+# Required-Stop:     $local_fs
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: one init script for the daemons of this host; the service is chosen by the script name
+### END INIT INFO
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+NAME=$(basename "$0")
+ENVFILE=
+STOP_RETRY=TERM/5/KILL/2
+case "$NAME" in
+  # the database runs in the foreground under this script: the packaged init script needs a writable root file system
+  mariadb)       RUNAS=mysql;     CMD="/usr/sbin/mariadbd";                              LOG=/var/log/mariadb/error.log; STOP_RETRY=TERM/30/KILL/5 ;;
+  # a stop is a SIGTERM: Redis writes its snapshot and exits
+  redis-queue)   RUNAS=redis;     CMD="/usr/bin/redis-server /etc/redis/queue.conf";     LOG=/var/log/redis-queue/redis.log; STOP_RETRY=TERM/20/KILL/2 ;;
+  alerts-api)    RUNAS=secalerts; CMD="/usr/bin/python3 -u /opt/secalerts/api.py";       LOG=/var/log/alerts-api/api.log; ENVFILE=/etc/secalerts/secalerts.env ;;
+  advisory-feed) RUNAS=secalerts; CMD="/usr/bin/python3 -u /opt/secalerts/feed.py";      LOG=/var/log/advisory-feed/feed.log; ENVFILE=/etc/secalerts/secalerts.env ;;
+  # a stop waits for the jobs in flight (up to 12 s inside jobrunner)
+  jobrunner)     RUNAS=jobrunner; CMD="/usr/bin/python3 -u /opt/jobrunner/jobrunner.py"; LOG=/var/log/jobrunner/jobrunner.log; STOP_RETRY=TERM/20/KILL/2 ;;
+  loadgen)       RUNAS=nobody;    CMD="/usr/bin/python3 /opt/secalerts/loadgen.py";      LOG=/dev/null ;;
+  *) echo "unknown service: $NAME" >&2; exit 2 ;;
+esac
+PIDFILE=/run/$NAME.pid
+
+. /lib/lsb/init-functions
+
+start() {
+  log_daemon_msg "Starting $NAME"
+  if [ -n "$ENVFILE" ]; then set -a; [ -r "$ENVFILE" ] && . "$ENVFILE"; set +a; fi
+  if [ "$LOG" != /dev/null ]; then touch "$LOG" && chown "$RUNAS" "$LOG"; fi
+  start-stop-daemon --start --quiet --oknodo --background --make-pidfile --pidfile "$PIDFILE" \
+    --chuid "$RUNAS" --no-close --startas /bin/sh -- -c "exec $CMD" >>"$LOG" 2>&1
+  log_end_msg $?
+}
+stop() {
+  log_daemon_msg "Stopping $NAME"
+  start-stop-daemon --stop --quiet --oknodo --retry=$STOP_RETRY --pidfile "$PIDFILE"
+  rc=$?; rm -f "$PIDFILE"; log_end_msg $rc
+}
+reload() {
+  [ "$NAME" = jobrunner ] || { echo "$NAME: reload is not supported, use restart" >&2; exit 3; }
+  log_daemon_msg "Reloading $NAME"
+  start-stop-daemon --stop --signal HUP --quiet --pidfile "$PIDFILE"
+  log_end_msg $?
+}
+case "${1:-}" in
+  start) start ;;
+  stop) stop ;;
+  restart) stop; sleep 1; start ;;
+  reload|force-reload) reload ;;
+  status) status_of_proc -p "$PIDFILE" "$NAME" "$NAME" ;;
+  *) echo "Usage: service $NAME {start|stop|restart|reload|status}"; exit 2 ;;
+esac

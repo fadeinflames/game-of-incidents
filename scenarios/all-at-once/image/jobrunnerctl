@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""jobrunnerctl: what the jobrunner pool of this host is doing. Read-only.
+
+  jobrunnerctl queues     every queue: jobs waiting, jobs in flight, the concurrency limit in effect
+  jobrunnerctl status     the pool: workers, how many are busy, since when it runs
+"""
+import json
+import sys
+
+import redis
+
+STATE = "jobrunner:state"
+
+
+def main():
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "--help"
+    if cmd in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        print("\nLimits are read by jobrunner from the file named in /etc/jobrunner/jobrunner.yml; see /usr/share/doc/jobrunner/README")
+        return 0
+    if cmd not in ("queues", "status"):
+        print("jobrunnerctl: unknown command '%s' (try: jobrunnerctl --help)" % cmd, file=sys.stderr)
+        return 2
+    r = redis.Redis(host="127.0.0.1", port=6379, socket_timeout=3, socket_connect_timeout=3, decode_responses=True)
+    try:
+        raw = r.get(STATE)
+        state = json.loads(raw) if raw else None
+        names = list(state["queues"]) if state else sorted(k for k in r.scan_iter(match="secalerts.*", count=500))
+        pending = {q: r.llen(q) for q in names}
+    except redis.RedisError as e:
+        print("jobrunnerctl: redis 127.0.0.1:6379: %s" % e, file=sys.stderr)
+        return 1
+    if cmd == "queues":
+        width = max([len(q) for q in names] + [5])
+        print("%-*s  %8s  %9s  %5s" % (width, "QUEUE", "PENDING", "IN FLIGHT", "LIMIT"))
+        for q in names:
+            if state:
+                info = state["queues"][q]
+                limit = "-" if info["limit"] is None else str(info["limit"])
+                flight = str(info["in_flight"])
+            else:
+                limit = flight = "?"
+            print("%-*s  %8d  %9s  %5s" % (width, q, pending[q], flight, limit))
+    if state:
+        print("%spool: %d workers, %d busy (%d of them pausing after a failed job); jobrunner %s, pid %d, started %s" % (
+            "\n" if cmd == "queues" else "", state["concurrency"], state["busy"], state["backing_off"], state["version"], state["pid"], state["started"]))
+        return 0
+    print("%sjobrunner is not running (no heartbeat in Redis)" % ("\n" if cmd == "queues" else ""))
+    return 3
+
+
+if __name__ == "__main__":
+    sys.exit(main())

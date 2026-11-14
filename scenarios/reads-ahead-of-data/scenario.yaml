@@ -1,0 +1,58 @@
+version: 2
+slug: reads-ahead-of-data
+title: "Выдан, но не найден"
+summary: "Сервис токенов отвечает 404 на часть проверок, хотя токены клиенты получили от него же. Большинство запросов проходит, отказы выглядят случайными."
+type: "Linux, MariaDB, перенос таблицы между кластерами, отставание копии, плановые работы"
+difficulty: MIDDLE
+durationMin: 25
+tags: [linux, mariadb, mysql, migration, replication-lag, database, postmortem]
+
+contextJson:
+  infra: "Один сервер auth-01 (Debian 12). Сервис tokend (Python, порт 8080) выдаёт и проверяет серверные токены интеграций, записи лежат в таблице install_tokens. На сервере два кластера MariaDB: старый db-old (3306) и новый db-new (3307). Команда БД переносит таблицу со старого на новый инструментом tablemover."
+  services: ["tokend", "db-old", "db-new", "tablemover", "cron"]
+  setup: "Сегодня ночью плановое окно команды БД по заявке CHG-4412: очередные шаги переноса install_tokens. Релизов tokend не было."
+  time: "Ночь, плановое окно работ"
+eventsJson:
+  - { t: 0, type: alert, title: "TokenValidation404: доля 404 выше 5 %", body: "tokend: часть запросов GET /v1/tokens/* отвечает 404 token not found. Обычно таких ответов нет совсем." }
+  - { t: 4, type: event, title: "Поддержка", body: "Клиенты пишут: интеграция получает от нас токен, идёт с ним в API и получает отказ. Повтор запроса не помогает. Может, перезапустить tokend?" }
+  - { t: 9, type: event, title: "Команда БД", body: "У нас плановое окно, по нашему плану всё штатно: tablemover в состоянии running, ошибок нет. Запись переключаем через 40 минут. Если вам так проще, можем переключить запись прямо сейчас и закончить раньше." }
+hintsJson:
+  - level: 1
+    penalty: 0
+    text: "Направление: отказы не случайны. Сравни в логе tokend токены, которые получили 404, с теми, что прошли проверку: когда выдан каждый из них. Потом выясни, откуда сервис читает записи и куда пишет."
+  - level: 2
+    penalty: 5
+    text: "Инструмент: /var/log/tokend/api.log (поле db= в каждой строке), curl -s localhost:8080/admin/routing, /etc/tokend/routing.conf, /var/log/dbmove/runbook.log. Состояние переноса: sudo tablemover status, строки backlog, lag и rate. Что копится в очереди: db-old tokens -e 'SELECT op, COUNT(*) FROM _tablemover_changes GROUP BY op'. Кто это делает: /var/log/token-cleanup/cleanup.log."
+  - level: 3
+    penalty: 15
+    text: "Почти ответ: чтение переключили на db-new, а копия там отстаёт на минуты и отстаёт всё сильнее: очередь переноса забита удалениями задачи token-cleanup (cron, настройки в /etc/tokend/cleanup.conf). Верни reads = db-old в /etc/tokend/routing.conf и выполни sudo service tokend reload. Поставь enabled = no в cleanup.conf. Данные на db-new руками не трогай, запись не переключай, пока backlog в tablemover status не дойдёт до нуля."
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+sources:
+  - title: "GitHub, 27.10.2026: Elevated 404s for GitHub App s2s tokens in git/API"
+    url: "https://www.githubstatus.com/incidents/dnslv7xdl4fj"
+
+environment:
+  kind: container
+  image: wom-scenario/reads-ahead-of-data:dev
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  startup: { expectedSec: 45, note: "Поднимаем два кластера MariaDB и ждём, пока проявятся первые отказы." }
+  resources: { cpus: 1, memoryMb: 384, pids: 384 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: auth-01
+  writable: ["/etc", "/var", "/home", "/root"]
+
+# on an unbroken stand everything the grader asks for already holds: reads and writes are on db-old, so a fresh token
+# validates at once; the migration runs with an empty queue; db-new is db-old as of the migration's position; the
+# cleanup job is switched off and nothing floods the change log
+test: { baseline: pass }

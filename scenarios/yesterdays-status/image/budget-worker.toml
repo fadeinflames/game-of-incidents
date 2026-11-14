@@ -1,0 +1,13 @@
+# Namespace "budget-worker", served by settingsd.
+# After a change: service settingsd reload. The worker asks settingsd every 15 seconds.
+
+[queue]
+# how many events from queue:budget-updates the worker applies per poll
+batch_size = 2
+poll_interval_ms = 1000
+
+[access]
+# lifetime of a cached access status, seconds
+status_ttl_sec = 21600
+# BUD-412, ahead of the monthly reset
+discard_state_before_reset = true

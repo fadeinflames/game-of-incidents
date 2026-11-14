@@ -1,0 +1,57 @@
+version: 2
+slug: quiet-replica
+title: "Реплика не жалуется"
+summary: "API платформы отвечает 503 почти на каждый запрос, интеграции не могут получить токен. Основной сервер базы прав отказывает в подключениях, хотя у базы все показатели в норме."
+type: "Linux, PostgreSQL, подключения и блокировки, потоковая репликация, фоновые задачи"
+difficulty: MIDDLE
+durationMin: 30
+tags: [linux, postgresql, connections, locks, replication, background-jobs, database, postmortem]
+
+contextJson:
+  infra: "Один сервер authdb-01 (Debian 12). PostgreSQL 15, два кластера: 15/main (основной, порт 5432, база authz) и 15/replica (резервный, потоковая репликация, порт 5433). В базе authz лежат права доступа: интеграции, их установки в проекты и токены. Сервис gate-api (порт 8080) на каждый запрос с токеном проверяет права в основном сервере и там же записывает новые токены."
+  services: ["postgresql (15/main, 15/replica)", "gate-api", "trafficgen (клиенты)"]
+  setup: "Релизов gate-api сегодня не было. Параметры PostgreSQL не менялись. Кластер общий: с базой authz работают и другие команды платформы."
+  time: "Будний день, 08:50"
+eventsJson:
+  - { t: 0, type: alert, title: "GateApi5xx > 80 %", body: "authdb-01: gate-api отвечает 503 и 504. CI-задачи не получают токены, запросы интеграций с токеном отклоняются." }
+  - { t: 3, type: event, title: "Дежурный DBA", body: "Со стороны базы всё зелёное: реплика на связи, отставание ноль, процессор и диск на основном сервере простаивают. В логе основного сплошные отказы в подключении. max_connections без нашей команды не трогать, и до конца дня мы его не поднимем." }
+  - { t: 8, type: event, title: "Команда CI", body: "Сборки стоят у всех: задача не может получить токен и повторяет запрос. Перезапустите уже gate-api или базу, раньше помогало." }
+hintsJson:
+  - level: 1
+    penalty: 0
+    text: "Направление: отказ в подключении говорит только о том, что все места заняты. Выясни, кем они заняты и чем эти сессии заняты прямо сейчас: работают или чего-то ждут. Если ждут, найди, кого именно."
+  - level: 2
+    penalty: 5
+    text: "Инструмент: sudo -u postgres psql -d authz. В pg_stat_activity сгруппируй сессии по usename, application_name, state и wait_event_type; для ожидающих добавь pg_blocking_pids(pid) и посмотри на сессию, которая их держит: чья она, давно ли открыта её транзакция (xact_start) и какой запрос в ней был последним. Потом найди этот процесс в ps -ef и прочитай его лог и конфигурацию."
+  - level: 3
+    penalty: 15
+    text: "Почти ответ: подключения основного сервера заняты записями токенов от gate-api, которые ждут блокировку строк таблицы integrations. Строки держит фоновая задача token-sweeper: она обрабатывает пачку из 40 установок (installs) в одной транзакции и после каждой делает паузу, не закрывая транзакцию. Её предохранитель смотрит только на отставание реплики, а оно нулевое. Поставь задачу на паузу так, как описано в её конфигурации: sudo touch /var/lib/token-sweeper/pause. Воркеры зафиксируют сделанное, очередь разойдётся сама. Базу и gate-api перезапускать не нужно, max_connections трогать нельзя."
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+sources:
+  - title: "GitHub, 13.09.2026: Incident with several GitHub Services"
+    url: "https://www.githubstatus.com/incidents/0rn90wk115q9"
+
+environment:
+  kind: container
+  image: wom-scenario/quiet-replica:dev
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 50
+  startup: { expectedSec: 45, note: "Поднимаем основной и резервный серверы базы и ждём, пока сервис перестанет справляться." }
+  resources: { cpus: 1, memoryMb: 512, pids: 512 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: authdb-01
+  writable: ["/etc", "/var", "/home", "/root"]
+
+# on an unbroken stand the cleanup job has not been started yet: the API serves the clients, tokens are issued,
+# the primary has free connection slots, the standby streams and the permission data is as seeded
+test: { baseline: pass }

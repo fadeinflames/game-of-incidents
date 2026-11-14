@@ -4,7 +4,7 @@
 
 Game of Incidents is a browser platform for incident training. You open a scenario, press **Run**, and get a terminal into an isolated, deliberately broken environment (a Linux host or your own Kubernetes cluster). You fix it and press **Check**. The grader looks at the result, not at the way you got there; after the fix you get a debrief with the reference solution.
 
-- **34 scenarios** (11 Linux, 23 Kubernetes on kind), twelve of them based on public postmortems of real incidents; six junior ones have a tutorial copy that unlocks diagnostic stages one by one.
+- **44 scenarios** (19 Linux, 25 Kubernetes on kind), twenty-two of them based on public postmortems of real incidents; seven junior ones have a tutorial copy that unlocks diagnostic stages one by one.
 - **Real environments, not quizzes**: every session gets its own sandbox (a hardened rootless Docker container, or a kind cluster per session).
 - **Self-hosted**: one command installs the whole platform on a clean Debian 13 or Ubuntu 24.04 host.
 - **Open scenarios**: a scenario is a folder (`scenario.yaml`, brief, debrief, `break.sh`, `check.sh`, `solve.sh`); you can write your own and submit it through the web UI or a pull request.

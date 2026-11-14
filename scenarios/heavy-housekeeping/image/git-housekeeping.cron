@@ -1,0 +1,2 @@
+# git-housekeeping: maintain the repositories that are due (settings: /etc/git-housekeeping.conf)
+* * * * * git /usr/local/bin/git-housekeeping >> /var/log/git-housekeeping/housekeeping.log 2>&1

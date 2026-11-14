@@ -1,0 +1,57 @@
+version: 2
+slug: hint-to-nowhere
+title: "Подсказка в никуда"
+summary: "Часть пользователей получает 500 вместо своих страниц, у остальных всё открывается. Проверка здоровья зелёная, релизов сегодня не было."
+type: "Linux, MariaDB, шарды, миграция схемы, настройки приложения"
+difficulty: JUNIOR
+durationMin: 20
+tags: [linux, mariadb, mysql, sharding, schema, migration, config, postmortem]
+
+contextJson:
+  infra: "Один сервер board-01 (Debian 12): сервис board-api (Python, порт 8080) отдаёт страницы пользователей из MariaDB. Данные разделены на три шарда: базы board_s1, board_s2, board_s3; шард выбирается по id пользователя. Изменения схемы выполняет сервис migrator: по одному шарду, с выдержкой между шардами."
+  services: ["mariadb", "board-api", "migrator"]
+  setup: "Сегодня команда баз данных выполняет согласованное изменение схемы CHG-2291, его ведёт migrator. Релизов board-api сегодня не было, настройки сервиса давно не меняли."
+  time: "Будний день, середина рабочего дня"
+eventsJson:
+  - { t: 0, type: alert, title: "BoardApi5xx > 15 %", body: "board-01: около пятой части запросов к board-api отвечает 500. GET /health отвечает 200." }
+  - { t: 3, type: event, title: "Поддержка", body: "Жалуются не все: у части клиентов не открывается список задач, у остальных всё работает. Профиль открывается у всех." }
+  - { t: 7, type: event, title: "Команда баз данных", body: "Напоминаем: изменение CHG-2291 согласовано, отменять и откатывать его не нужно. Если мешает разбираться, поставьте migrator на паузу, потом продолжите." }
+hintsJson:
+  - level: 1
+    penalty: 0
+    text: "Направление: ответ 500 причину не называет, её называет лог сервиса. Найди там текст ошибки базы и прочитай дословно: какого объекта не хватает и в каком шарде. Потом выясни, кто сегодня менял схему этого шарда и что будет, когда очередь дойдёт до остальных."
+  - level: 2
+    penalty: 5
+    text: "Инструмент: grep ' 500 ' /var/log/board-api/api.log | tail показывает ошибку базы и запрос, который её вызвал. sudo mysql board_s1 -e 'SHOW INDEX FROM tasks' и то же для board_s2 покажут разницу между шардами. migratectl status, migratectl show и migratectl log рассказывают, что делает плановое изменение. Имя из текста ошибки найди в /etc: grep -rn. Настройки, с которыми сервис работает прямо сейчас: curl -s localhost:8080/admin/settings. Ошибка есть на двух разных страницах, смотри обе."
+  - level: 3
+    penalty: 15
+    text: "Почти ответ: в /etc/board-api/settings.conf две настройки, tasks_list_index и feed_index, подставляют в запросы FORCE INDEX с именами индексов, которые изменение CHG-2291 удаляет. Запрос с таким указанием на отсутствующий индекс падает с ошибкой 1176. Поставь изменение на паузу (sudo migratectl pause), очисти оба значения, примени (sudo service board-api reload) и проверь через /admin/settings и обе страницы пользователя 1042. Потом доведи изменение до конца: sudo migratectl resume, затем sudo migratectl next для каждого оставшегося шарда, и проверь страницы пользователей 2042 и 3042."
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+guide: guide.md
+
+sources:
+  - title: "GitHub, 12.08.2026: Incident with Pull Requests and Issues"
+    url: "https://www.githubstatus.com/incidents/76t89hbfb09h"
+
+environment:
+  kind: container
+  image: wom-scenario/hint-to-nowhere:dev
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  resources: { cpus: 1, memoryMb: 256, pids: 256 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: board-01
+  writable: ["/etc", "/var", "/home", "/root"]
+
+# the grader requires the approved change to be finished on all three shards; on an unbroken stand it has not started,
+# so every page works but the old indexes are still everywhere
+test: { baseline: fail }

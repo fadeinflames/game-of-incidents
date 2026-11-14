@@ -1,0 +1,55 @@
+jobrunner 2.9.4
+===============
+
+A pool of worker threads that runs background jobs from Redis queues.
+
+Files
+-----
+/etc/jobrunner/jobrunner.yml   pool size, Redis, the application, the database the jobs use
+/etc/jobrunner/limits.yml      per-queue concurrency limits (the file named by limits_file)
+/var/log/jobrunner/            the log
+/opt/jobrunner/jobrunner.py    the daemon
+
+The application (the file named by `app`) declares the queues and the job classes. Producers put jobs on a
+queue; the queue of a job class is chosen by the application, not by jobrunner.
+
+The pool
+--------
+pool.concurrency is the number of worker threads. A worker runs one job at a time. All queues share the
+pool: a worker takes the next job from whichever queue has one. A change of pool.concurrency needs a
+restart of the service.
+
+Limits
+------
+limits.yml holds one mapping:
+
+    limits:
+      <queue name>: <number>
+
+The number is the most jobs of that queue that may run at the same time. The queue name is compared with
+the names the application declares, character for character; `jobrunnerctl queues` prints those names and
+the limit in effect for each.
+
+  - A queue that has no entry is not limited: its jobs may take every worker of the pool.
+  - 0 pauses the queue: its jobs stay queued.
+  - An entry whose name is not a queue of the application is skipped.
+
+`service jobrunner reload` (SIGHUP) reads the limits file again. Jobs that are already running finish; a
+lower limit takes effect as they do. If the file cannot be read, the previous limits stay in effect and
+the reason is written to the log.
+
+Failed jobs
+-----------
+A job whose function raises an error goes back to the front of its queue and is tried again. The worker
+that ran it pauses for a moment before it takes the next job.
+
+Restarts
+--------
+A job taken from a queue is kept in the Redis list `jobrunner:inflight` until it is finished. On stop the
+pool waits up to 12 seconds for running jobs. Whatever is still in that list when jobrunner starts is
+returned to its queue first. Jobs are written to be safe to run twice.
+
+Tools
+-----
+jobrunnerctl queues     queues: jobs waiting, jobs in flight, limit in effect
+jobrunnerctl status     the pool

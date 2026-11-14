@@ -1,0 +1,57 @@
+version: 2
+slug: the-backends-are-fine
+title: "Движки в порядке"
+summary: "Клиенты сервиса перевода волнами получают ошибку «движки временно недоступны»: список движков не загружается, хотя сами движки запущены и считают себя здоровыми."
+type: "Linux, nginx, лимит запросов, кэш, зависимость от чужого сервиса"
+difficulty: MIDDLE
+durationMin: 20
+tags: [linux, nginx, rate-limit, cache, dependencies, postmortem]
+
+contextJson:
+  infra: "Один сервер api-01 (Debian 12). nginx на порту 80 принимает запросы клиентов и передаёт их в catalog-api (Python, порт 8080). catalog-api отдаёт клиенту список движков перевода и перед этим узнаёт подписку аккаунта в сервисе entitlements команды биллинга, к которому ходит через её шлюз на порту 9000. Движки engine-std и engine-pro слушают порты 9201 и 9202."
+  services: ["nginx", "catalog-api", "entitlements", "engine-std", "engine-pro"]
+  setup: "Серверную часть сегодня не выкатывали, настройки не меняли. С утра пользователям автоматически приходит обновление плагина для редактора: версия 2.9.0 вместо 2.8.4, она уже у большинства."
+  time: "Вторник, 11:40"
+eventsJson:
+  - { t: 0, type: alert, title: "EngineListErrors", body: "Доля ошибок GET /v1/engines выше 20 %. Клиенты видят сообщение «Engines are temporarily unavailable»." }
+  - { t: 4, type: event, title: "Поддержка", body: "Пользователи плагина пишут, что движки недоступны и перевод не запускается. Через минуту-другую всё проходит само, потом повторяется." }
+  - { t: 8, type: event, title: "Команда движков", body: "У engine-std и engine-pro всё зелёное, очередей нет. Но в такие минуты запросов на перевод к нам приходит меньше обычного, а не больше." }
+  - { t: 13, type: event, title: "Команда клиентов", body: "Версия 2.9.0 уже у большинства пользователей. Откатить её можно только через магазин расширений, это около суток." }
+hintsJson:
+  - level: 1
+    penalty: 0
+    text: "Направление: движки и catalog-api живы, а список не отдаётся. Выясни, что catalog-api делает перед тем, как отдать список, и что он пишет в свой лог в минуты ошибок."
+  - level: 2
+    penalty: 5
+    text: "Инструмент: /var/log/catalog-api/catalog-api.log называет причину каждого отказа. Дальше смотри логи шлюза entitlements: /var/log/nginx/entitlements-gw.access.log и entitlements-gw.error.log. Кто и как часто запрашивает список, видно в /var/log/nginx/edge.access.log по полям account и ua. Счётчики и действующие настройки catalog-api: curl -s 127.0.0.1:8080/internal/stats и curl -s 127.0.0.1:8080/internal/config."
+  - level: 3
+    penalty: 15
+    text: "Почти ответ: плагин 2.9.0 запрашивает список движков каждые 2 секунды, а catalog-api помнит ответ entitlements тоже 2 секунды, поэтому каждый запрос списка превращается в запрос к entitlements. В пик это около 25 запросов в секунду при лимите шлюза 5, остальные получают 429. Лимит чужой и защищает базу подписок, клиентов блокировать нельзя. Увеличь ENTITLEMENT_CACHE_TTL_SEC в /etc/catalog-api/catalog-api.env (не больше 300: дольше нельзя из-за отзыва подписок) и примени: sudo service catalog-api reload."
+actionsJson: []
+gmScriptJson: null
+
+brief: brief.md
+debrief: debrief.md
+
+sources:
+  - title: "GitHub, 03.08.2026: Incident with Copilot"
+    url: "https://www.githubstatus.com/incidents/7s119p1yxttr"
+
+environment:
+  kind: container
+  image: wom-scenario/the-backends-are-fine:dev
+  build: ./image
+  break: break.sh
+  check: check.sh
+  solve: solve.sh
+  ttlMin: 45
+  resources: { cpus: 1, memoryMb: 128, pids: 384 }
+  network: { egress: none }
+  services: []
+  shell: { user: oncall, cwd: /home/oncall, shell: /bin/bash, sudo: true }
+  hostname: api-01
+  writable: ["/etc", "/var", "/home", "/root"]
+
+# the grader sends its own rush of clients that behave like plugin 2.9.0: the unbroken stand has the same two-second
+# cache in front of the same limit and does not survive that rush either
+test: { baseline: fail }

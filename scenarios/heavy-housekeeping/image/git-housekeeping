@@ -1,0 +1,108 @@
+#!/bin/sh
+# git-housekeeping: routine maintenance of the bare repositories under /var/lib/git.
+#
+#   git-housekeeping                    the scheduled run (cron, every minute): every repository that is due
+#   git-housekeeping --plan             show the settings in effect and what a scheduled run would do; changes nothing
+#   git-housekeeping --force <group/name.git> [--wait SECONDS]
+#                                       maintain this one repository now, due or not; with --wait, wait that long
+#                                       for a run that is in progress
+#   GIT_HOUSEKEEPING_FORCE=<group/name.git> [GIT_HOUSEKEEPING_WAIT=SECONDS] in the environment: the same as --force
+#
+# A repository is due when it has more than max_packs pack files or more than max_loose loose objects
+# (/etc/git-housekeeping.conf). Maintenance is a full repack: every reachable object goes into one new pack and
+# the deltas are computed again (git repack -a -d -f). How git packs is git configuration: /etc/gitconfig for
+# the whole server, <repository>/config and <repository>/info/attributes for one repository.
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+ROOT=/var/lib/git
+CONF=/etc/git-housekeeping.conf
+LOCK=/run/git-housekeeping/lock
+
+setting() {
+  v=$(sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$CONF" 2>/dev/null | sed 's/[[:space:]]*#.*$//; s/[[:space:]]*$//' | tail -n 1)
+  [ -n "$v" ] && echo "$v" || echo "$2"
+}
+ENABLED=$(setting enabled yes)
+MAX_PACKS=$(setting max_packs 10)
+MAX_LOOSE=$(setting max_loose 150)
+EXCLUDE=$(setting exclude "")
+case "$MAX_PACKS" in ''|*[!0-9]*) MAX_PACKS=10 ;; esac
+case "$MAX_LOOSE" in ''|*[!0-9]*) MAX_LOOSE=150 ;; esac
+
+log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) git-housekeeping[$$]: $*"; }
+usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+repos() { (cd "$ROOT" && ls -d */*.git 2>/dev/null); }
+excluded() { for x in $EXCLUDE; do [ "$x" = "$1" ] && return 0; done; return 1; }
+packs() { ls "$ROOT/$1/objects/pack" 2>/dev/null | grep -c '\.pack$'; }
+loose() { git -C "$ROOT/$1" count-objects 2>/dev/null | cut -d' ' -f1; }
+
+# prints the reason when the repository is due
+due() {
+  p=$(packs "$1"); l=$(loose "$1")
+  if [ "${p:-0}" -gt "$MAX_PACKS" ]; then echo "$p packs > $MAX_PACKS"; return 0; fi
+  if [ "${l:-0}" -gt "$MAX_LOOSE" ]; then echo "$l loose objects > $MAX_LOOSE"; return 0; fi
+  return 1
+}
+
+maintain() {
+  name=$1; why=$2
+  log "$name: $why: git repack -a -d -f"
+  t0=$(date +%s)
+  out=$(git -C "$ROOT/$name" repack -a -d -f -q 2>&1)
+  rc=$?
+  dur=$(( $(date +%s) - t0 ))
+  if [ $rc -eq 0 ]; then
+    log "$name: ok in $dur s: $(packs "$name") pack, $(du -sm "$ROOT/$name/objects" | cut -f1) MB"
+  else
+    log "$name: FAILED after $dur s (exit $rc): $(echo "$out" | tail -n 1)"
+  fi
+  return $rc
+}
+
+FORCE=${GIT_HOUSEKEEPING_FORCE:-}
+WAIT=${GIT_HOUSEKEEPING_WAIT:-0}
+case "${1:-}" in
+  --plan)
+    echo "settings: enabled=$ENABLED max_packs=$MAX_PACKS max_loose=$MAX_LOOSE exclude=${EXCLUDE:--}"
+    for r in $(repos); do
+      state="packs=$(packs "$r") loose=$(loose "$r")"
+      if [ "$ENABLED" != yes ]; then echo "$r: $state -> skipped (housekeeping is disabled)"
+      elif excluded "$r"; then echo "$r: $state -> excluded"
+      elif why=$(due "$r"); then echo "$r: $state -> due ($why)"
+      else echo "$r: $state -> ok"
+      fi
+    done
+    exit 0 ;;
+  --force)
+    FORCE=${2:-}
+    [ -n "$FORCE" ] || usage
+    [ "${3:-}" = "--wait" ] && WAIT=${4:-0} ;;
+  "") ;;
+  *) usage ;;
+esac
+case "$WAIT" in ''|*[!0-9]*) WAIT=0 ;; esac
+
+if [ -n "$FORCE" ]; then
+  [ -d "$ROOT/$FORCE/objects" ] || { echo "git-housekeeping: no such repository: $FORCE" >&2; exit 2; }
+  [ "$ENABLED" = yes ] || { echo "git-housekeeping: housekeeping is disabled (enabled in $CONF)" >&2; exit 3; }
+  excluded "$FORCE" && { echo "git-housekeeping: $FORCE is excluded from housekeeping (exclude in $CONF)" >&2; exit 3; }
+  [ -e "$LOCK" ] || : > "$LOCK"
+  exec 9<"$LOCK" || exit 1
+  flock -w "$WAIT" 9 || { echo "git-housekeeping: another run is in progress" >&2; exit 75; }
+  maintain "$FORCE" "run on request"
+  exit $?
+fi
+
+# the scheduled run
+[ "$ENABLED" = yes ] || exit 0
+[ -e "$LOCK" ] || : > "$LOCK"
+exec 9<"$LOCK" || exit 1
+flock -n 9 || { log "the previous run is still in progress, nothing started"; exit 0; }
+ok=0; failed=0
+for r in $(repos); do
+  excluded "$r" && continue
+  why=$(due "$r") || continue
+  if maintain "$r" "due ($why)"; then ok=$((ok + 1)); else failed=$((failed + 1)); fi
+done
+[ $failed -gt 0 ] && log "run finished: $ok ok, $failed failed; a failed repository stays due and is tried again by the next run"
+exit 0

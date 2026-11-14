@@ -1,0 +1,24 @@
+# jobrunner on alerts-01: the worker pool of the security alerts service.
+# Documentation: /usr/share/doc/jobrunner/README
+
+pool:
+  # worker threads, shared by all queues of the service
+  concurrency: 96
+
+redis:
+  host: 127.0.0.1
+  port: 6379
+
+# the application: declares the queues and the job classes
+app: /opt/secalerts/jobs.py
+
+# per-queue concurrency limits
+limits_file: /etc/jobrunner/limits.yml
+
+# what the jobs of the application connect to
+database:
+  host: 127.0.0.1
+  port: 3306
+  name: secalerts
+  user: jobrunner
+  password: jr-9vKq2mXt

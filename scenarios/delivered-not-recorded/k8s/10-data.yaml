@@ -1,0 +1,113 @@
+# Redis: the two streams of the pipeline (events, deliveries). Memory only: no RDB, no AOF.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: hooks
+  labels: { app: redis }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: redis }
+  template:
+    metadata:
+      labels: { app: redis }
+    spec:
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: redis
+          image: redis:7.4.1-alpine
+          imagePullPolicy: IfNotPresent
+          args: ["--save", "", "--appendonly", "no", "--maxmemory", "96mb", "--maxmemory-policy", "noeviction"]
+          ports:
+            - { containerPort: 6379, name: redis }
+          readinessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 25m, memory: 24Mi }
+            limits: { memory: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: hooks
+spec:
+  selector: { app: redis }
+  ports:
+    - { name: redis, port: 6379, targetPort: redis }
+---
+# PostgreSQL: the deliveries store (what history-api shows to the customers).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: hooks
+data:
+  init.sql: |
+    CREATE TABLE IF NOT EXISTS deliveries (
+      delivery_id    text PRIMARY KEY,
+      hook_id        text NOT NULL,
+      event          text NOT NULL,
+      status         integer NOT NULL,
+      duration_ms    integer NOT NULL,
+      delivered_at   timestamptz NOT NULL,
+      payload_sha256 text NOT NULL,
+      recorded_at    timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS deliveries_hook_time ON deliveries (hook_id, delivered_at DESC);
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: hooks
+  labels: { app: postgres }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: postgres }
+  template:
+    metadata:
+      labels: { app: postgres }
+    spec:
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          args: ["-c", "shared_buffers=16MB", "-c", "max_connections=30"]
+          env:
+            - { name: POSTGRES_DB, value: hooks }
+            - { name: POSTGRES_USER, value: hooks }
+            - { name: POSTGRES_PASSWORD, value: hooks }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports:
+            - { containerPort: 5432, name: pg }
+          volumeMounts:
+            - { name: init, mountPath: /docker-entrypoint-initdb.d }
+          readinessProbe:
+            # over TCP: the temporary server of the first start listens on the socket only
+            exec: { command: ["pg_isready", "-h", "127.0.0.1", "-U", "hooks", "-d", "hooks"] }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 192Mi }
+      volumes:
+        - name: init
+          configMap: { name: postgres-init }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: hooks
+spec:
+  selector: { app: postgres }
+  ports:
+    - { name: pg, port: 5432, targetPort: pg }

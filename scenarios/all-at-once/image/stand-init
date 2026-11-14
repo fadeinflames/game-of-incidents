@@ -1,0 +1,9 @@
+#!/bin/sh
+# First boot of the stand: the history that comes with the image is moved so that its last advisory was
+# published 75 seconds ago.
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+mysql --no-defaults secalerts <<'SQL'
+SET @shift = TIMESTAMPDIFF(SECOND, (SELECT MAX(published_at) FROM advisories), NOW()) - 75;
+UPDATE advisories SET published_at = published_at + INTERVAL @shift SECOND, fanned_out_at = fanned_out_at + INTERVAL @shift SECOND;
+UPDATE alerts SET created_at = created_at + INTERVAL @shift SECOND, updated_at = updated_at + INTERVAL @shift SECOND;
+SQL

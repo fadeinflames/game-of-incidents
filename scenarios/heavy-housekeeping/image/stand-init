@@ -1,0 +1,37 @@
+#!/bin/sh
+# First boot of the stand: the housekeeping log gets the history of the last three days, dated back from "now".
+# The code repositories were maintained every hour or so; studio/assets.git once, two days ago.
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+FLAG=/var/lib/git/.stand-init-done
+LOG=/var/log/git-housekeeping/housekeeping.log
+[ -e "$FLAG" ] && exit 0
+now=$(date -u +%s)
+ts() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
+assets_mb=$(du -sm /var/lib/git/studio/assets.git/objects | cut -f1)
+
+set -- docs/handbook.git mobile/app.git platform/billing-api.git platform/deploy-tools.git web/checkout.git web/storefront.git
+t=$(( now - 3 * 86400 - 1740 ))
+t=$(( t - t % 60 ))
+n=0
+assets_done=0
+{
+  while [ $t -lt $(( now - 2400 )) ]; do
+    n=$((n + 1))
+    # the pid of a cron child, different for every run
+    pid=$(( 1200 + (n * 7919) % 28000 ))
+    eval "repo=\${$(( n % 6 + 1 ))}"
+    loose=$(( 151 + (n * 13) % 9 ))
+    echo "$(ts $((t + 1))) git-housekeeping[$pid]: $repo: due ($loose loose objects > 150): git repack -a -d -f"
+    echo "$(ts $((t + 1))) git-housekeeping[$pid]: $repo: ok in 0 s: 1 pack, 1 MB"
+    if [ $assets_done -eq 0 ] && [ $t -gt $(( now - 2 * 86400 - 9000 )) ]; then
+      assets_done=1
+      t=$(( t + 1260 ))
+      pid=$(( pid + 311 ))
+      echo "$(ts $((t + 1))) git-housekeeping[$pid]: studio/assets.git: due (11 packs > 10): git repack -a -d -f"
+      echo "$(ts $((t + 2))) git-housekeeping[$pid]: studio/assets.git: ok in 1 s: 1 pack, $assets_mb MB"
+    fi
+    t=$(( t + 2400 + (n * 37) % 25 * 60 ))
+  done
+} > "$LOG"
+chown git:git "$LOG"
+: > "$FLAG"

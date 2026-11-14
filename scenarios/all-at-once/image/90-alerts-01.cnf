@@ -1,0 +1,9 @@
+# alerts-01: MariaDB instance of the security alerts service.
+# Owned by the DBA team. The instance is sized for this VM; changes go through a DBA change request.
+[mysqld]
+bind-address            = 127.0.0.1
+skip-name-resolve
+max_connections         = 40
+innodb_buffer_pool_size = 64M
+innodb_log_file_size    = 32M
+log_warnings            = 1

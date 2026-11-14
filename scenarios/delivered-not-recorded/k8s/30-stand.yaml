@@ -1,0 +1,70 @@
+# Around the pipeline: the product that publishes events (emitter) and the customers' servers (customers).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: emitter
+  namespace: hooks
+  labels: { app: emitter }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: emitter }
+  template:
+    metadata:
+      labels: { app: emitter }
+    spec:
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: emitter
+          image: wom-scenario/delivered-not-recorded:dev
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "/opt/stand/emitter.py"]
+          env:
+            - { name: REDIS_HOST, value: redis }
+            - { name: EVENTS_PER_SEC, value: "2" }
+          resources:
+            requests: { cpu: 20m, memory: 24Mi }
+            limits: { memory: 64Mi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: customers
+  namespace: outside
+  labels: { app: customers }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: customers }
+  template:
+    metadata:
+      labels: { app: customers }
+    spec:
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: customers
+          image: wom-scenario/delivered-not-recorded:dev
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "/opt/stand/customers.py"]
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 3
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+            limits: { memory: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: customers
+  namespace: outside
+spec:
+  selector: { app: customers }
+  ports:
+    - { name: http, port: 8080, targetPort: http }

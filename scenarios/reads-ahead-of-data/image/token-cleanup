@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""token-cleanup: deletes install tokens that expired more than retention_days ago.
+
+Started by cron every minute. One run deletes in small batches until second 57 of the minute it was started in, then
+the next run continues. Deletes are writes: they go to the cluster that /etc/tokend/routing.conf names for writes.
+The settings in /etc/tokend/cleanup.conf are read again before every batch, so "enabled = no" stops a run at once.
+"""
+import configparser
+import fcntl
+import os
+import sys
+import time
+
+import pymysql
+
+CONF = "/etc/tokend/cleanup.conf"
+TOKEND_CONF = "/etc/tokend/tokend.conf"
+ROUTING = "/etc/tokend/routing.conf"
+STATE_DIR = "/var/lib/tokend"
+
+
+def log(msg):
+    print(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} token-cleanup: {msg}", flush=True)
+
+
+def settings():
+    out = {"enabled": "no", "retention_days": "30", "batch_rows": "80", "batch_pause_sec": "2"}
+    with open(CONF, encoding="utf-8") as f:
+        for line in f:
+            line = line.split("#", 1)[0].strip()
+            if "=" in line:
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip()
+    return {
+        "enabled": out["enabled"].lower() in ("yes", "true", "on", "1"),
+        "retention_days": max(1, int(out["retention_days"])),
+        "batch_rows": min(1000, max(1, int(out["batch_rows"]))),
+        "batch_pause_sec": min(30.0, max(0.2, float(out["batch_pause_sec"]))),
+    }
+
+
+def last_status(new=None):
+    """what the previous run found, kept so that 'disabled' is logged once and not every minute"""
+    path = os.path.join(STATE_DIR, "cleanup.status")
+    try:
+        with open(path, encoding="utf-8") as f:
+            old = f.read().strip()
+    except OSError:
+        old = ""
+    if new is not None and new != old:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(new + "\n")
+    return old
+
+
+def connect():
+    cp = configparser.ConfigParser()
+    with open(TOKEND_CONF, encoding="utf-8") as f:
+        cp.read_file(f)
+    rt = configparser.ConfigParser()
+    with open(ROUTING, encoding="utf-8") as f:
+        rt.read_file(f)
+    cluster = rt["install_tokens"]["writes"].strip()
+    host, _, port = rt["clusters"][cluster].strip().partition(":")
+    conn = pymysql.connect(host=host, port=int(port), user=cp["database"]["user"], password=cp["database"]["password"],
+                           database=cp["database"]["name"], connect_timeout=3, read_timeout=30, write_timeout=30, charset="utf8mb4")
+    return cluster, conn
+
+
+def main():
+    started = time.time()
+    deadline = started - started % 60 + 57
+    lock = open(os.path.join(STATE_DIR, "cleanup.lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return 0  # the previous run is still working
+    try:
+        cfg = settings()
+    except (OSError, ValueError) as e:
+        log(f"cannot read {CONF}: {e}")
+        return 1
+    if not cfg["enabled"]:
+        if last_status("disabled") != "disabled":
+            log(f"disabled (enabled = no in {CONF}): runs are skipped until it is enabled again")
+        return 0
+    if deadline - started < 2:
+        return 0  # too late in this minute, the next run starts in a moment
+    was = last_status("enabled")
+    try:
+        cluster, conn = connect()
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM install_tokens WHERE expires_at < NOW() - INTERVAL %s DAY", (cfg["retention_days"],))
+            waiting = cur.fetchone()[0]
+        conn.commit()
+    except (pymysql.MySQLError, OSError, KeyError) as e:
+        log(f"FAILED to start a run: {e}")
+        return 1
+    if was != "enabled":
+        log(f"enabled again (enabled = yes in {CONF})")
+    log(f"run started on {cluster}: {waiting} tokens expired more than {cfg['retention_days']} days ago, "
+        f"deleting {cfg['batch_rows']} every {cfg['batch_pause_sec']:g} s")
+    deleted = batches = 0
+    note = ""
+    try:
+        while time.time() < deadline:
+            try:
+                cfg = settings()
+            except (OSError, ValueError):
+                pass
+            if not cfg["enabled"]:
+                last_status("disabled")
+                note = f"; stopped: enabled = no in {CONF}"
+                break
+            with conn.cursor() as cur:
+                n = cur.execute("DELETE FROM install_tokens WHERE expires_at < NOW() - INTERVAL %s DAY ORDER BY expires_at LIMIT %s",
+                                (cfg["retention_days"], cfg["batch_rows"]))
+            conn.commit()
+            if n == 0:
+                break
+            deleted += n
+            batches += 1
+            time.sleep(cfg["batch_pause_sec"])
+    except pymysql.MySQLError as e:
+        log(f"FAILED after {deleted} tokens: {e}")
+        return 1
+    finally:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+    log(f"run finished: deleted {deleted} tokens in {batches} batches, {max(0, waiting - deleted)} left{note}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

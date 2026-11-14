@@ -1,0 +1,42 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          git-03-services
+# Required-Start:    $local_fs $network
+# Required-Stop:     $local_fs
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: one init script for the daemons of this host; the service is chosen by the script name
+### END INIT INFO
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+NAME=$(basename "$0")
+STOP_RETRY=TERM/5/KILL/2
+case "$NAME" in
+  gitstored) RUNAS=git;    CMD="/usr/bin/python3 -u /opt/gitstored/gitstored.py master"; LOG=/var/log/gitstored/gitstored.log ;;
+  mergeq)    RUNAS=mergeq; CMD="/usr/bin/python3 -u /opt/mergeq/mergeq.py daemon";       LOG=/var/log/mergeq/mergeq.log ;;
+  loadgen)   RUNAS=git;    CMD="/usr/bin/python3 -u /opt/loadgen/loadgen.py";            LOG=/dev/null ;;
+  *) echo "unknown service: $NAME" >&2; exit 2 ;;
+esac
+PIDFILE=/run/$NAME.pid
+
+. /lib/lsb/init-functions
+
+start() {
+  log_daemon_msg "Starting $NAME"
+  [ "$LOG" = /dev/null ] || { touch "$LOG" && chown "$RUNAS" "$LOG"; }
+  HOME=$(getent passwd "$RUNAS" | cut -d: -f6); export HOME
+  start-stop-daemon --start --quiet --oknodo --background --make-pidfile --pidfile "$PIDFILE" \
+    --chuid "$RUNAS" --chdir / --no-close --startas /bin/sh -- -c "exec $CMD" >>"$LOG" 2>&1
+  log_end_msg $?
+}
+stop() {
+  log_daemon_msg "Stopping $NAME"
+  start-stop-daemon --stop --quiet --oknodo --retry=$STOP_RETRY --pidfile "$PIDFILE"
+  rc=$?; rm -f "$PIDFILE"; log_end_msg $rc
+}
+case "${1:-}" in
+  start) start ;;
+  stop) stop ;;
+  restart) stop; sleep 1; start ;;
+  status) status_of_proc -p "$PIDFILE" "$NAME" "$NAME" ;;
+  *) echo "Usage: service $NAME {start|stop|restart|status}"; exit 2 ;;
+esac

@@ -1,0 +1,117 @@
+# The job start service: submitter (stands for the clients) -> queue -> dispatcher pods that start the jobs.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: runs
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: queue
+  namespace: runs
+  labels: { app: queue }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: queue }
+  template:
+    metadata:
+      labels: { app: queue }
+    spec:
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: queue
+          image: wom-scenario/below-the-baseline:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: ROLE, value: queue }
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 3
+            timeoutSeconds: 3
+            failureThreshold: 10
+          securityContext: { readOnlyRootFilesystem: true, allowPrivilegeEscalation: false }
+          resources:
+            requests: { cpu: 50m, memory: 32Mi }
+            limits: { memory: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: queue
+  namespace: runs
+spec:
+  selector: { app: queue }
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+---
+# Load simulator: stands for the clients who submit jobs.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: submitter
+  namespace: runs
+  labels: { app: submitter }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: submitter }
+  template:
+    metadata:
+      labels: { app: submitter }
+    spec:
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: submitter
+          image: wom-scenario/below-the-baseline:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: ROLE, value: submitter }
+            - { name: QUEUE_ADDR, value: "queue.runs.svc.cluster.local:8080" }
+            - { name: JOBS_PER_SEC, value: "6" }
+          ports:
+            - { containerPort: 9090, name: stats }
+          readinessProbe:
+            httpGet: { path: /healthz, port: stats }
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 10
+          securityContext: { readOnlyRootFilesystem: true, allowPrivilegeEscalation: false }
+          resources:
+            requests: { cpu: 25m, memory: 24Mi }
+            limits: { memory: 64Mi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dispatcher
+  namespace: runs
+  labels: { app: dispatcher }
+  annotations:
+    kubernetes.io/change-cause: "release 4.12: new log format"
+    capacity.platform.example/managed-by: platform/capacity-controller
+    capacity.platform.example/pool: dispatcher
+spec:
+  replicas: 8
+  selector:
+    matchLabels: { app: dispatcher }
+  template:
+    metadata:
+      labels: { app: dispatcher }
+    spec:
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: dispatcher
+          image: wom-scenario/below-the-baseline:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: ROLE, value: dispatcher }
+            - { name: QUEUE_ADDR, value: "queue.runs.svc.cluster.local:8080" }
+          securityContext: { readOnlyRootFilesystem: true, allowPrivilegeEscalation: false }
+          resources:
+            requests: { cpu: 20m, memory: 20Mi }
+            limits: { cpu: 200m, memory: 48Mi }
